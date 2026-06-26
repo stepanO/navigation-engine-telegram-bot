@@ -233,6 +233,45 @@ describe('GrammYNavigationEngine — onError hook', () => {
     const ctx = makeCallbackCtx('nav:/unknown');
     await expect(runMiddleware(nav.middleware(), ctx)).resolves.not.toThrow();
   });
+
+  it('automatically dismisses callback query spinner when onError does not call answerCallbackQuery', async () => {
+    const api = makeMockApi();
+    const nav = new GrammYNavigationEngine(api, {
+      onError: async () => {},
+    });
+    const ctx = makeCallbackCtx('nav:/');
+    await runMiddleware(nav.middleware(), ctx);
+    expect(api.answerCallbackQuery).toHaveBeenCalledTimes(1);
+    expect(api.answerCallbackQuery).toHaveBeenCalledWith('cq1', undefined);
+  });
+
+  it('passes answerCallbackQuery helper that shows alert with text', async () => {
+    const api = makeMockApi();
+    const nav = new GrammYNavigationEngine(api, {
+      onError: async (_err, _ctx, answer) => {
+        await answer({ text: 'Access denied', showAlert: true });
+      },
+    });
+    const ctx = makeCallbackCtx('nav:/');
+    await runMiddleware(nav.middleware(), ctx);
+    expect(api.answerCallbackQuery).toHaveBeenCalledTimes(1);
+    expect(api.answerCallbackQuery).toHaveBeenCalledWith('cq1', {
+      text: 'Access denied',
+      show_alert: true,
+    });
+  });
+
+  it('does not double-answer when onError calls answerCallbackQuery helper once', async () => {
+    const api = makeMockApi();
+    const nav = new GrammYNavigationEngine(api, {
+      onError: async (_err, _ctx, answer) => {
+        await answer({ text: 'Error!' });
+      },
+    });
+    const ctx = makeCallbackCtx('nav:/');
+    await runMiddleware(nav.middleware(), ctx);
+    expect(api.answerCallbackQuery).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('GrammYNavigationEngine — stableId wiring', () => {

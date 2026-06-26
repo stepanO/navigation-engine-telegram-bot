@@ -25,8 +25,18 @@ export interface WizardDefinition {
   /** Ordered list of steps. Index 0 is rendered first. */
   readonly steps: readonly WizardStep[];
   /**
+   * When true, the engine deletes the user's incoming text message after
+   * a wizard text step handles it. Keeps the chat clean during wizard flows.
+   * Defaults to false.
+   */
+  readonly deleteUserMessage?: boolean;
+  /**
    * Path navigated to when the wizard is cancelled or when the last step
    * calls nextStep() (completing the wizard).
+   *
+   * Accepts a factory function that receives the accumulated wizard data so the
+   * destination can be derived from params collected during the flow, e.g.:
+   *   exitPath: (data) => `/events/${data.eventId}`
    */
-  readonly exitPath: string;
+  readonly exitPath: string | ((data: Record<string, unknown>) => string);
 }

@@ -16,6 +16,7 @@ import {
 class SpyRenderer implements Renderer {
   readonly renders: ScreenView[] = [];
   readonly callbacksAnswered: RenderTarget[] = [];
+  readonly deletedMessages: Array<{ chatId: number; messageId: number }> = [];
   nextMessageId: number | undefined = undefined;
 
   async render(view: ScreenView, _target: RenderTarget): Promise<RenderResult> {
@@ -30,6 +31,10 @@ class SpyRenderer implements Renderer {
 
   async answerCallbackQuery(_target: RenderTarget): Promise<void> {
     this.callbacksAnswered.push(_target);
+  }
+
+  async deleteMessage(chatId: number, messageId: number): Promise<void> {
+    this.deletedMessages.push({ chatId, messageId });
   }
 
   get lastView(): ScreenView | undefined {
@@ -224,6 +229,23 @@ describe('WizardNavigationEngine — nextStep()', () => {
     expect(exitCalls[0]!.path).toBe('/events');
   });
 
+  it('completing last step resolves exitPath function with accumulated data', async () => {
+    const fnEngine = makeEngine(renderer, stateStore, exitCalls);
+    fnEngine.define({
+      id: 'createEvent',
+      steps: [{ screen: NameStep }, { screen: DateStep }, { screen: ConfirmStep }],
+      exitPath: (data) => `/projects/${data['projectId'] as string}/events`,
+    });
+
+    await fnEngine.start('createEvent', user, chat, target);
+    await fnEngine.nextStep('createEvent', { projectId: '42' }, user, chat, target);
+    await fnEngine.nextStep('createEvent', undefined, user, chat, target);
+    await fnEngine.nextStep('createEvent', undefined, user, chat, target); // last step
+
+    expect(exitCalls).toHaveLength(1);
+    expect(exitCalls[0]!.path).toBe('/projects/42/events');
+  });
+
   it('deletes wizard state after completing last step', async () => {
     await engine.start('createEvent', user, chat, target);
     await engine.nextStep('createEvent', undefined, user, chat, target);
@@ -326,6 +348,22 @@ describe('WizardNavigationEngine — cancel()', () => {
     await engine.cancel('createEvent', user, chat, target);
     expect(exitCalls).toHaveLength(1);
     expect(exitCalls[0]!.path).toBe('/events');
+  });
+
+  it('resolves exitPath function with data accumulated before cancel', async () => {
+    const fnEngine = makeEngine(renderer, stateStore, exitCalls);
+    fnEngine.define({
+      id: 'createEvent',
+      steps: [{ screen: NameStep }, { screen: DateStep }, { screen: ConfirmStep }],
+      exitPath: (data) => `/projects/${data['projectId'] as string ?? 'none'}/events`,
+    });
+
+    await fnEngine.start('createEvent', user, chat, target);
+    await fnEngine.nextStep('createEvent', { projectId: '99' }, user, chat, target);
+    await fnEngine.cancel('createEvent', user, chat, target);
+
+    expect(exitCalls).toHaveLength(1);
+    expect(exitCalls[0]!.path).toBe('/projects/99/events');
   });
 
   it('deletes wizard state', async () => {
@@ -708,6 +746,23 @@ describe('WizardNavigationEngine — tryHandleText()', () => {
     expect(capturedTextCtx?.totalSteps).toBe(1);
     expect(capturedTextCtx?.user).toEqual(user);
     expect(capturedTextCtx?.chat).toEqual(chat);
+  });
+
+  it('deletes the incoming message when deleteUserMessage is true', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/', deleteUserMessage: true });
+    await engine.start('w1', user, chat, target);
+    await engine.tryHandleText('w1', 'bad', user, chat, target, 555);
+    expect(renderer.deletedMessages).toHaveLength(1);
+    expect(renderer.deletedMessages[0]).toEqual({ chatId: chat.id, messageId: 555 });
+  });
+
+  it('does not delete the incoming message when deleteUserMessage is not set', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    await engine.tryHandleText('w1', 'bad', user, chat, target, 555);
+    expect(renderer.deletedMessages).toHaveLength(0);
   });
 });
 

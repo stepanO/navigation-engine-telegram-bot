@@ -29,6 +29,7 @@ class SpyRenderer implements Renderer {
     return {};
   }
   async answerCallbackQuery(_target: RenderTarget): Promise<void> {}
+  async deleteMessage(_chatId: number, _messageId: number): Promise<void> {}
 }
 
 /** Builds a minimal fake grammY Context. */

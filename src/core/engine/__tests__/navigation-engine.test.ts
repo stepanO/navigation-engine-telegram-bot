@@ -51,6 +51,8 @@ class SpyRenderer implements Renderer {
   async answerCallbackQuery(target: RenderTarget): Promise<void> {
     this.callbacks.push(target);
   }
+
+  async deleteMessage(_chatId: number, _messageId: number): Promise<void> {}
 }
 
 class AllowGuard implements Guard {
@@ -331,6 +333,7 @@ describe('NavigationEngine', () => {
           return { messageId: 77 };
         }
         async answerCallbackQuery(_target: RenderTarget): Promise<void> {}
+        async deleteMessage(_chatId: number, _messageId: number): Promise<void> {}
       }
 
       const store = new InMemoryStateStore();

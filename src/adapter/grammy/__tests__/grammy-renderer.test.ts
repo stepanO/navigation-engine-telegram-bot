@@ -228,7 +228,7 @@ describe('GrammYRenderer', () => {
 
       await renderer.answerCallbackQuery(targetWithMessage, 'Done!');
 
-      expect(answerCallbackQuery).toHaveBeenCalledWith('cq1', { text: 'Done!' });
+      expect(answerCallbackQuery).toHaveBeenCalledWith('cq1', { text: 'Done!', show_alert: false });
     });
 
     it('does not call answerCallbackQuery when callbackQueryId is absent', async () => {

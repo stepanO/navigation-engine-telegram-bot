@@ -79,6 +79,7 @@ export class WizardNavigationEngine {
     user: TelegramUser,
     chat: TelegramChat,
     target: RenderTarget,
+    incomingMessageId?: number,
   ): Promise<boolean> {
     const def = this.wizards.get(wizardId);
     if (!def) return false;
@@ -95,7 +96,7 @@ export class WizardNavigationEngine {
       state.stepIndex + 1, state.totalSteps, state.data,
       async (data) => this.advanceStep(def, state, data, user, chat, target),
       async () => this.retreatStep(def, state, user, chat, target),
-      async () => this.cancelInternal(state, user, chat, target),
+      async () => this.cancelInternal(def, state, user, chat, target),
       async (path, mode) => {
         if (mode === 'back') {
           await this.retreatStep(def, state, user, chat, target);
@@ -119,6 +120,9 @@ export class WizardNavigationEngine {
         }
       }
     }
+    if (def.deleteUserMessage && incomingMessageId !== undefined) {
+      await this.renderer.deleteMessage(chat.id, incomingMessageId);
+    }
     return true;
   }
 
@@ -141,7 +145,7 @@ export class WizardNavigationEngine {
       stepIndex: 0,
       totalSteps: def.steps.length,
       data: {},
-      exitPath: def.exitPath,
+      exitPath: typeof def.exitPath === 'string' ? def.exitPath : '',
       messageId: undefined,
     });
     await this.stateStore.set(key, state);
@@ -188,9 +192,9 @@ export class WizardNavigationEngine {
     chat: TelegramChat,
     target: RenderTarget,
   ): Promise<void> {
-    this.requireWizard(wizardId);
+    const def = this.requireWizard(wizardId);
     const state = await this.requireActiveState(wizardId, chat.id, user.id);
-    await this.cancelInternal(state, user, chat, target);
+    await this.cancelInternal(def, state, user, chat, target);
   }
 
   /**
@@ -242,7 +246,7 @@ export class WizardNavigationEngine {
       // Last step complete — clean up and hand off to nav engine
       this.activeWizardByUser.delete(`${chat.id}:${user.id}`);
       await this.stateStore.delete(key);
-      await this.exitFn(state.exitPath, user, chat, target);
+      await this.exitFn(this.resolveExitPath(def, merged), user, chat, target);
     } else {
       const newState = buildWizardState({
         wizardId: state.wizardId,
@@ -281,6 +285,7 @@ export class WizardNavigationEngine {
   }
 
   private async cancelInternal(
+    def: WizardDefinition,
     state: WizardState,
     user: TelegramUser,
     chat: TelegramChat,
@@ -289,7 +294,7 @@ export class WizardNavigationEngine {
     this.activeWizardByUser.delete(`${chat.id}:${user.id}`);
     const key = buildWizardKey(chat.id, user.id, state.wizardId);
     await this.stateStore.delete(key);
-    await this.exitFn(state.exitPath, user, chat, target);
+    await this.exitFn(this.resolveExitPath(def, state.data), user, chat, target);
   }
 
   private async renderStep(
@@ -314,7 +319,7 @@ export class WizardNavigationEngine {
       state.data,
       async (data) => this.advanceStep(def, state, data, user, chat, target),
       async () => this.retreatStep(def, state, user, chat, target),
-      async () => this.cancelInternal(state, user, chat, target),
+      async () => this.cancelInternal(def, state, user, chat, target),
       async (path, mode) => {
         if (mode === 'back') {
           await this.retreatStep(def, state, user, chat, target);
@@ -340,6 +345,10 @@ export class WizardNavigationEngine {
     }
 
     await this.renderer.answerCallbackQuery(target);
+  }
+
+  private resolveExitPath(def: WizardDefinition, data: Record<string, unknown>): string {
+    return typeof def.exitPath === 'function' ? def.exitPath(data) : def.exitPath;
   }
 
   private buildSyntheticRoute(

@@ -46,5 +46,6 @@ export interface RenderResult {
  */
 export interface Renderer {
   render(view: ScreenView, target: RenderTarget): Promise<RenderResult>;
-  answerCallbackQuery(target: RenderTarget, text?: string): Promise<void>;
+  answerCallbackQuery(target: RenderTarget, text?: string, showAlert?: boolean): Promise<void>;
+  deleteMessage(chatId: number, messageId: number): Promise<void>;
 }

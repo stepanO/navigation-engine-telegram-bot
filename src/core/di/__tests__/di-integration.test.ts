@@ -48,6 +48,7 @@ class SpyRenderer implements Renderer {
     return {};
   }
   async answerCallbackQuery(): Promise<void> {}
+  async deleteMessage(_chatId: number, _messageId: number): Promise<void> {}
   get lastView(): ScreenView | undefined {
     return this.views[this.views.length - 1];
   }

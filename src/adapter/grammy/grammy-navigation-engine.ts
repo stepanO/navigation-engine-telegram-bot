@@ -62,8 +62,17 @@ export interface GrammYNavigationEngineOptions {
   /**
    * Called when a navigation error bubbles up from middleware (RouteNotFoundError,
    * NavigationGuardError, ResolverError, etc.). If not set the error is re-thrown.
+   *
+   * The third argument `answerCallbackQuery` dismisses the Telegram callback query
+   * spinner and optionally shows an alert popup. Call it when you want to surface
+   * the error to the user (e.g. a guard rejection). If you do not call it, the
+   * library automatically dismisses the spinner silently after your handler returns.
    */
-  readonly onError?: (error: unknown, ctx: Context) => Promise<void>;
+  readonly onError?: (
+    error: unknown,
+    ctx: Context,
+    answerCallbackQuery: (opts?: { text?: string; showAlert?: boolean }) => Promise<void>,
+  ) => Promise<void>;
   /**
    * Called after every successful navigation with timing data.
    * Useful for logging, metrics, or debugging resolver latency.
@@ -85,7 +94,11 @@ export class GrammYNavigationEngine {
   private readonly renderer: GrammYRenderer;
   private readonly stateStore: StateStore;
   private readonly wizardStateStore: WizardStateStore;
-  private readonly onError: ((error: unknown, ctx: Context) => Promise<void>) | undefined;
+  private readonly onError: ((
+    error: unknown,
+    ctx: Context,
+    answerCallbackQuery: (opts?: { text?: string; showAlert?: boolean }) => Promise<void>,
+  ) => Promise<void>) | undefined;
   private wizardEngine?: WizardNavigationEngine;
 
   constructor(
@@ -235,7 +248,7 @@ export class GrammYNavigationEngine {
           if (wizardId !== undefined) {
             const target = await this.buildRenderTarget(ctx);
             const handled = await this.wizardEngine.tryHandleText(
-              wizardId, ctx.message.text, user, chat, target,
+              wizardId, ctx.message.text, user, chat, target, ctx.message.message_id,
             );
             if (handled) return;
           }
@@ -244,7 +257,21 @@ export class GrammYNavigationEngine {
         await next();
       } catch (err) {
         if (this.onError) {
-          await this.onError(err, ctx);
+          let cbqAnswered = false;
+          const answerCbq = async (opts?: { text?: string; showAlert?: boolean }) => {
+            cbqAnswered = true;
+            if (ctx.callbackQuery?.id && ctx.chat && ctx.from) {
+              await this.renderer.answerCallbackQuery(
+                { chatId: ctx.chat.id, userId: ctx.from.id, callbackQueryId: ctx.callbackQuery.id },
+                opts?.text,
+                opts?.showAlert,
+              );
+            }
+          };
+          await this.onError(err, ctx, answerCbq);
+          if (!cbqAnswered) {
+            await answerCbq();
+          }
         } else {
           throw err;
         }

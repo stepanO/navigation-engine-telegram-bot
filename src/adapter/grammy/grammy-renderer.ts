@@ -34,12 +34,27 @@ export class GrammYRenderer implements Renderer {
     return this.sendNew(view, target);
   }
 
-  async answerCallbackQuery(target: RenderTarget, text?: string): Promise<void> {
+  async deleteMessage(chatId: number, messageId: number): Promise<void> {
+    try {
+      await this.api.deleteMessage(chatId, messageId);
+    } catch (err) {
+      if (
+        err instanceof GrammyError &&
+        (err.description.includes('message to delete not found') ||
+         err.description.includes('MESSAGE_ID_INVALID'))
+      ) {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async answerCallbackQuery(target: RenderTarget, text?: string, showAlert?: boolean): Promise<void> {
     if (!target.callbackQueryId) return;
 
     await this.api.answerCallbackQuery(
       target.callbackQueryId,
-      text !== undefined ? { text } : undefined,
+      text !== undefined ? { text, show_alert: showAlert ?? false } : undefined,
     );
   }
 
