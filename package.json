@@ -34,7 +34,7 @@
     "spa",
     "grpc"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "peerDependencies": {
     "grammy": "^1.0.0"
   },
