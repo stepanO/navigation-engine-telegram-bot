@@ -50,6 +50,22 @@ export interface RouteDefinition {
    * resolved constructor is then cached for subsequent navigations.
    */
   readonly component: ScreenComponentConstructor | LazyComponentFactory;
+  /**
+   * Stable two-character base-36 ID for CompactCallbackEncoder (e.g. 'a1', '0z').
+   *
+   * CompactCallbackEncoder normally assigns IDs by registration order, which means
+   * inserting a new route can shift IDs and invalidate existing buttons in user chats.
+   * Setting stableId pins the route to a fixed ID that survives reordering.
+   *
+   * Rules:
+   *   - Must be exactly two base-36 characters (0–9, a–z), e.g. '00', 'zz', 'a1'.
+   *   - Must be unique across all registered routes.
+   *   - Has no effect when SimpleCallbackEncoder or ServerStateEncoder is used.
+   *
+   * @example
+   * nav.register({ path: '/admin', stableId: 'a0', component: AdminHubScreen })
+   */
+  readonly stableId?: string;
   /** Guards evaluated in order before rendering. Any rejection stops navigation. */
   readonly guards?: readonly GuardConstructor[];
   /** Resolvers run in parallel after guards pass. Results land in ctx.data. */

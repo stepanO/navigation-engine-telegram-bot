@@ -38,6 +38,23 @@ export interface NavigationEngineConfig {
   readonly maxHistory?: number;
   /** Optional DI injector. When set, constructors that declare a static factory() receive injected services. */
   readonly injector?: Injector;
+  /**
+   * Called when a screen invokes `ctx.cancelActiveWizard(wizardId?)`.
+   * Injected by GrammYNavigationEngine when a wizard engine is configured.
+   * Defaults to a no-op so the core engine has no direct wizard dependency.
+   */
+  readonly cancelActiveWizardFn?: (user: TelegramUser, chat: TelegramChat, wizardId?: string) => Promise<void>;
+  /**
+   * Called after every successful navigation with path, user/chat IDs,
+   * per-resolver durations (ms), and total navigation duration (ms).
+   */
+  readonly onNavigate?: (event: {
+    path: string;
+    userId: number;
+    chatId: number;
+    resolverDurationsMs: Record<string, number>;
+    totalDurationMs: number;
+  }) => void;
 }
 
 export class NavigationEngine {
@@ -128,10 +145,15 @@ export class NavigationEngine {
     target: RenderTarget,
     existingStack?: NavigationStack,
   ): Promise<void> {
+    const startMs = Date.now();
     const routeMatch = this.router.matchOrThrow(path);
 
     const stateKey = buildStateKey(chat.id, user.id);
     const stack = existingStack ?? await this.loadStack(stateKey, chat.id, user.id);
+
+    const cancelFn = this.config.cancelActiveWizardFn
+      ? (wizardId?: string) => this.config.cancelActiveWizardFn!(user, chat, wizardId)
+      : undefined;
 
     const createCtx = (data: Record<string, unknown>) =>
       new ConcreteNavigationContext(
@@ -146,6 +168,7 @@ export class NavigationEngine {
             await this.executeNavigation(p, m, user, chat, target);
           }
         },
+        cancelFn,
       );
 
     const middlewareData: Record<string, unknown> = {};
@@ -172,7 +195,8 @@ export class NavigationEngine {
       }
 
       // ── Resolvers ─────────────────────────────────────────────────────────
-      const resolvedData = await this.runResolvers(routeMatch, ctxForMiddleware, user, chat);
+      const { data: resolvedData, durations: resolverDurationsMs } =
+        await this.runResolvers(routeMatch, ctxForMiddleware, user, chat);
       const fullData = { ...definition.data, ...middlewareData, ...resolvedData };
       const ctxForRender = createCtx(fullData);
 
@@ -200,6 +224,14 @@ export class NavigationEngine {
       // 'back' mode: cursor already moved before entering executeNavigation.
 
       await this.stateStore.set(stateKey, stack.toState());
+
+      this.config.onNavigate?.({
+        path,
+        userId: user.id,
+        chatId: chat.id,
+        resolverDurationsMs,
+        totalDurationMs: Date.now() - startMs,
+      });
     });
   }
 
@@ -234,18 +266,19 @@ export class NavigationEngine {
     ctx: ConcreteNavigationContext,
     user: TelegramUser,
     chat: TelegramChat,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<{ data: Record<string, unknown>; durations: Record<string, number> }> {
     const { resolvers } = match.definition;
-    if (!resolvers) return {};
+    if (!resolvers) return { data: {}, durations: {} };
 
     const entries = Object.entries(resolvers);
     const results = await Promise.allSettled(
       entries.map(async ([key, ResolverCtor]) => {
+        const t0 = Date.now();
         if (ResolverCtor.cacheTtl !== undefined) {
           const cacheKey = this.resolverCacheKey(chat.id, user.id, match, key);
           const cached = this.resolverCache.get(cacheKey);
           if (cached !== undefined && Date.now() < cached.expiresAt) {
-            return { key, value: cached.value };
+            return { key, value: cached.value, durationMs: Date.now() - t0 };
           }
           const resolver = createInjectable(ResolverCtor, this.injector);
           const value = await resolver.resolve(ctx);
@@ -253,15 +286,16 @@ export class NavigationEngine {
             value,
             expiresAt: Date.now() + ResolverCtor.cacheTtl,
           });
-          return { key, value };
+          return { key, value, durationMs: Date.now() - t0 };
         }
         const resolver = createInjectable(ResolverCtor, this.injector);
         const value = await resolver.resolve(ctx);
-        return { key, value };
+        return { key, value, durationMs: Date.now() - t0 };
       }),
     );
 
     const data: Record<string, unknown> = {};
+    const durations: Record<string, number> = {};
     for (const result of results) {
       if (result.status === 'rejected') {
         const failedIndex = results.indexOf(result);
@@ -269,9 +303,10 @@ export class NavigationEngine {
         throw new ResolverError(entry?.[0] ?? 'unknown', result.reason);
       }
       data[result.value.key] = result.value.value;
+      durations[result.value.key] = result.value.durationMs;
     }
 
-    return data;
+    return { data, durations };
   }
 
   private resolverCacheKey(

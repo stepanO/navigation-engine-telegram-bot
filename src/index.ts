@@ -87,7 +87,7 @@ export {
 
 // Compact and server-state encoders (Phase 9)
 export { CompactCallbackEncoder } from './callback/compact-callback-encoder.js';
-export type { CallbackStore } from './callback/server-state-encoder.js';
+export type { CallbackStore, InMemoryCallbackStoreOptions } from './callback/server-state-encoder.js';
 export { ServerStateEncoder, InMemoryCallbackStore } from './callback/server-state-encoder.js';
 
 // Dependency Injection (Phase 8)
@@ -102,7 +102,8 @@ export type { WizardState, WizardStateStore } from './core/wizard/wizard-state.j
 export { InMemoryWizardStateStore, buildWizardKey } from './core/wizard/wizard-state.js';
 export { WizardScreen } from './core/wizard/wizard-screen.js';
 export type { WizardScreenConstructor } from './core/wizard/wizard-screen.js';
-export type { WizardContext } from './core/wizard/wizard-context.js';
+export type { WizardContext, WizardTextContext } from './core/wizard/wizard-context.js';
+export { ConcreteWizardTextContext } from './core/wizard/wizard-context.js';
 export { WizardNavigationEngine } from './core/wizard/wizard-navigation-engine.js';
 export type { WizardExitFn } from './core/wizard/wizard-navigation-engine.js';
 

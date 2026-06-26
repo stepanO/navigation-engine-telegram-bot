@@ -11,12 +11,24 @@ import type { Injector } from '../di/injector.js';
 
 export type ParseMode = 'HTML' | 'Markdown' | 'MarkdownV2';
 
+/** Login URL configuration for Telegram login buttons. */
+export interface LoginUrl {
+  readonly url: string;
+  readonly forwardText?: string;
+  readonly botUsername?: string;
+  readonly requestWriteAccess?: boolean;
+}
+
 /** A single inline keyboard button. */
 export interface InlineKeyboardButton {
   readonly text: string;
   /** Pre-encoded callback data. Use KeyboardBuilder / Button helpers to construct. */
   readonly callback_data?: string;
   readonly url?: string;
+  /** Opens a Telegram Mini App (web_app). Not encoded in callback_data. */
+  readonly web_app?: { readonly url: string };
+  /** Telegram login button. Not encoded in callback_data. */
+  readonly login_url?: LoginUrl;
 }
 
 /**

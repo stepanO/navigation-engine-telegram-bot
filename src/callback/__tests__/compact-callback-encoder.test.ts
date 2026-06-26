@@ -239,4 +239,69 @@ describe('CompactCallbackEncoder', () => {
       expect(encoder.size).toBe(4);
     });
   });
+
+  // ── registerRoute() with stableId ──────────────────────────────────────────
+
+  describe('registerRoute() with stableId', () => {
+    it('pins the route to the provided base-36 ID', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/a', 'a0'); // base-36 a0 = 360
+      const encoded = enc.encodeNavigation('/a');
+      expect(encoded).toBe('c:a0');
+    });
+
+    it('round-trips correctly when using stableId', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/events/:eventId', 'e1');
+      const encoded = enc.encodeNavigation('/events/42');
+      expect(enc.decode(encoded)).toEqual({ type: 'navigation', path: '/events/42' });
+    });
+
+    it('auto-assigned IDs skip stableId-reserved slots', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/stable', '02'); // pins numeric ID 2
+      enc.registerRoute('/auto-a');       // gets ID 0
+      enc.registerRoute('/auto-b');       // gets ID 1
+      enc.registerRoute('/auto-c');       // gets ID 3 (2 is reserved)
+
+      expect(enc.decode(enc.encodeNavigation('/auto-a'))).toEqual({ type: 'navigation', path: '/auto-a' });
+      expect(enc.decode(enc.encodeNavigation('/auto-b'))).toEqual({ type: 'navigation', path: '/auto-b' });
+      expect(enc.decode(enc.encodeNavigation('/stable'))).toEqual({ type: 'navigation', path: '/stable' });
+      expect(enc.decode(enc.encodeNavigation('/auto-c'))).toEqual({ type: 'navigation', path: '/auto-c' });
+
+      // Verify IDs explicitly: auto-c must NOT decode to stable or vice-versa
+      const encAutoC = enc.encodeNavigation('/auto-c');
+      expect(encAutoC).not.toBe('c:02');
+    });
+
+    it('auto-ID counter skips stableId-reserved IDs even when registered after some auto IDs', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/auto-a');      // ID 0
+      enc.registerRoute('/stable', '01'); // pins ID 1
+      enc.registerRoute('/auto-b');      // ID 2 (not 1, which is reserved)
+
+      expect(enc.decode('c:00')).toEqual({ type: 'navigation', path: '/auto-a' });
+      expect(enc.decode('c:01')).toEqual({ type: 'navigation', path: '/stable' });
+      expect(enc.decode('c:02')).toEqual({ type: 'navigation', path: '/auto-b' });
+    });
+
+    it('throws when stableId is already in use', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/a', 'zz');
+      expect(() => enc.registerRoute('/b', 'zz')).toThrow('already in use');
+    });
+
+    it('throws with the conflicting stableId in the error message', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/a', 'b5');
+      expect(() => enc.registerRoute('/b', 'b5')).toThrow('b5');
+    });
+
+    it('ignores duplicate path registration even when stableId differs', () => {
+      const enc = new CompactCallbackEncoder();
+      enc.registerRoute('/a', 'a0');
+      enc.registerRoute('/a'); // duplicate path — should be ignored silently
+      expect(enc.size).toBe(1);
+    });
+  });
 });

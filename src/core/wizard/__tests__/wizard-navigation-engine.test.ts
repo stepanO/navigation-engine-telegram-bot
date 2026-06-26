@@ -1,7 +1,7 @@
 import type { ScreenView } from '../../interfaces/screen.js';
 import type { Renderer, RenderTarget, RenderResult } from '../../interfaces/renderer.js';
 import type { TelegramUser, TelegramChat } from '../../interfaces/navigation.js';
-import type { WizardContext } from '../wizard-context.js';
+import type { WizardContext, WizardTextContext } from '../wizard-context.js';
 import { WizardScreen } from '../wizard-screen.js';
 import { WizardNavigationEngine } from '../wizard-navigation-engine.js';
 import { InMemoryWizardStateStore } from '../wizard-state.js';
@@ -538,6 +538,176 @@ describe('WizardNavigationEngine — WizardContext methods', () => {
     await capturedCtx!.replace('/replaced');
     expect(exitCalls).toHaveLength(1);
     expect(exitCalls[0]!.path).toBe('/replaced');
+  });
+});
+
+// ─── Text-input helpers ────────────────────────────────────────────────────────
+
+let capturedTextCtx: WizardTextContext | undefined;
+let onTextReturnView: ScreenView | undefined = undefined;
+
+class TextInputStep extends WizardScreen {
+  readonly awaitText = true as const;
+
+  async onStep(_ctx: WizardContext): Promise<ScreenView> {
+    return { text: 'Enter a value:' };
+  }
+
+  async onText(ctx: WizardTextContext): Promise<ScreenView | void> {
+    capturedTextCtx = ctx;
+    if (onTextReturnView !== undefined) {
+      return onTextReturnView;
+    }
+    await ctx.nextStep({ value: ctx.text });
+  }
+}
+
+class NoTextStep extends WizardScreen {
+  async onStep(_ctx: WizardContext): Promise<ScreenView> {
+    return { text: 'No text input here' };
+  }
+}
+
+// ─── getActiveWizardId ────────────────────────────────────────────────────────
+
+describe('WizardNavigationEngine — getActiveWizardId()', () => {
+  it('returns undefined when no wizard has been started', async () => {
+    const engine = new WizardNavigationEngine(new SpyRenderer(), new InMemoryWizardStateStore(), async () => {});
+    expect(await engine.getActiveWizardId(chat.id, user.id)).toBeUndefined();
+  });
+
+  it('returns the wizardId after start()', async () => {
+    const engine = new WizardNavigationEngine(new SpyRenderer(), new InMemoryWizardStateStore(), async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: NameStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    expect(await engine.getActiveWizardId(chat.id, user.id)).toBe('w1');
+  });
+
+  it('returns undefined after cancel()', async () => {
+    const engine = new WizardNavigationEngine(new SpyRenderer(), new InMemoryWizardStateStore(), async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: NameStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    await engine.cancel('w1', user, chat, target);
+    expect(await engine.getActiveWizardId(chat.id, user.id)).toBeUndefined();
+  });
+
+  it('returns undefined after completing all steps', async () => {
+    const renderer = new SpyRenderer();
+    const stateStore = new InMemoryWizardStateStore();
+    const engine = new WizardNavigationEngine(renderer, stateStore, async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: NameStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    await engine.nextStep('w1', undefined, user, chat, target); // completes wizard
+    expect(await engine.getActiveWizardId(chat.id, user.id)).toBeUndefined();
+  });
+
+  it('tracks different users independently', async () => {
+    const engine = new WizardNavigationEngine(new SpyRenderer(), new InMemoryWizardStateStore(), async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: NameStep }], exitPath: '/' });
+    const user2: TelegramUser = { id: 2, firstName: 'Bob', isBot: false };
+
+    await engine.start('w1', user, chat, target);
+    expect(await engine.getActiveWizardId(chat.id, user.id)).toBe('w1');
+    expect(await engine.getActiveWizardId(chat.id, user2.id)).toBeUndefined();
+  });
+});
+
+// ─── tryHandleText ─────────────────────────────────────────────────────────────
+
+describe('WizardNavigationEngine — tryHandleText()', () => {
+  let renderer: SpyRenderer;
+  let stateStore: InMemoryWizardStateStore;
+  let exitCalls: Array<{ path: string }>;
+
+  beforeEach(() => {
+    renderer = new SpyRenderer();
+    stateStore = new InMemoryWizardStateStore();
+    exitCalls = [];
+    capturedTextCtx = undefined;
+    onTextReturnView = undefined;
+  });
+
+  it('returns false when no active wizard state exists', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    const result = await engine.tryHandleText('w1', 'hello', user, chat, target);
+    expect(result).toBe(false);
+  });
+
+  it('returns false when wizardId is not registered', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async () => {});
+    const result = await engine.tryHandleText('nonexistent', 'hello', user, chat, target);
+    expect(result).toBe(false);
+  });
+
+  it('returns false when current step does not have awaitText', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async (p) => { exitCalls.push({ path: p }); });
+    engine.define({ id: 'w1', steps: [{ screen: NoTextStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    const result = await engine.tryHandleText('w1', 'hello', user, chat, target);
+    expect(result).toBe(false);
+  });
+
+  it('returns true when step has awaitText and onText', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async (p) => { exitCalls.push({ path: p }); });
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    const result = await engine.tryHandleText('w1', 'hello', user, chat, target);
+    expect(result).toBe(true);
+  });
+
+  it('passes the submitted text via ctx.text', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async (p) => { exitCalls.push({ path: p }); });
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    await engine.tryHandleText('w1', 'my text value', user, chat, target);
+    expect(capturedTextCtx?.text).toBe('my text value');
+  });
+
+  it('re-renders the step when onText returns a ScreenView', async () => {
+    onTextReturnView = { text: 'Validation error!' };
+    const engine = new WizardNavigationEngine(renderer, stateStore, async (p) => { exitCalls.push({ path: p }); });
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    const rendersBefore = renderer.renders.length;
+    await engine.tryHandleText('w1', 'bad', user, chat, target);
+    expect(renderer.renders.length).toBe(rendersBefore + 1);
+    expect(renderer.lastView?.text).toBe('Validation error!');
+  });
+
+  it('does not re-render when onText returns void', async () => {
+    // Default TextInputStep calls nextStep and returns void
+    const engine = new WizardNavigationEngine(renderer, stateStore, async (p) => { exitCalls.push({ path: p }); });
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }, { screen: NameStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    const rendersBefore = renderer.renders.length;
+    await engine.tryHandleText('w1', 'valid text', user, chat, target);
+    // nextStep was called internally, which renders step 2 — that's 1 render
+    // the tryHandleText itself should not add an extra render beyond what nextStep does
+    expect(renderer.renders.length).toBe(rendersBefore + 1);
+    expect(renderer.lastView?.text).toBe('Enter name'); // step 2 from NameStep
+  });
+
+  it('persists new messageId from re-render', async () => {
+    onTextReturnView = { text: 'Error!' };
+    renderer.nextMessageId = 999;
+    const engine = new WizardNavigationEngine(renderer, stateStore, async () => {});
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    await engine.tryHandleText('w1', 'bad', user, chat, target);
+    const state = await stateStore.get(`wizard:${chat.id}:${user.id}:w1`);
+    expect(state?.messageId).toBe(999);
+  });
+
+  it('WizardTextContext provides wizard context properties alongside text', async () => {
+    const engine = new WizardNavigationEngine(renderer, stateStore, async (p) => { exitCalls.push({ path: p }); });
+    engine.define({ id: 'w1', steps: [{ screen: TextInputStep }], exitPath: '/' });
+    await engine.start('w1', user, chat, target);
+    await engine.tryHandleText('w1', 'data', user, chat, target);
+    expect(capturedTextCtx?.step).toBe(1);
+    expect(capturedTextCtx?.totalSteps).toBe(1);
+    expect(capturedTextCtx?.user).toEqual(user);
+    expect(capturedTextCtx?.chat).toEqual(chat);
   });
 });
 

@@ -54,16 +54,40 @@ export class CompactCallbackEncoder implements CallbackDataEncoder {
 
   /**
    * Register a route path pattern. Must be called before encoding any
-   * navigation to that path. Call in the same order on every deployment.
+   * navigation to that path.
+   *
+   * When `stableId` is provided (a two-char base-36 string, e.g. 'a1'), the route
+   * is pinned to that fixed numeric ID so that reordering routes across deployments
+   * does not shift IDs and invalidate callbacks already sent to users.
+   *
+   * Without `stableId`, the next available auto-assigned ID is used, skipping any
+   * IDs already reserved by explicit stableId values.
+   *
    * Fluent — returns `this` for chaining.
    */
-  registerRoute(path: string): this {
+  registerRoute(path: string, stableId?: string): this {
     if (this.byPath.has(path)) return this;
     const compiled = compileRoute({
       path,
       component: null as unknown as ScreenComponentConstructor,
     });
-    const id = this.nextId++;
+
+    let id: number;
+    if (stableId !== undefined) {
+      id = fromRouteId(stableId);
+      if (this.byId.has(id)) {
+        throw new Error(
+          `CompactCallbackEncoder: stableId "${stableId}" is already in use. ` +
+          `Each route must have a unique stableId.`,
+        );
+      }
+    } else {
+      while (this.byId.has(this.nextId)) {
+        this.nextId++;
+      }
+      id = this.nextId++;
+    }
+
     this.byPath.set(path, { id, compiled });
     this.byId.set(id, compiled);
     return this;

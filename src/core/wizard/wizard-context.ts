@@ -30,10 +30,16 @@ export interface WizardContext extends NavigationContext {
   cancelWizard(): Promise<void>;
 }
 
+/** Extends WizardContext with the text message the user sent (available in onText handlers). */
+export interface WizardTextContext extends WizardContext {
+  readonly text: string;
+}
+
 export type WizardNextStepFn = (data?: Record<string, unknown>) => Promise<void>;
 export type WizardPrevStepFn = () => Promise<void>;
 export type WizardCancelFn = () => Promise<void>;
 export type WizardNavigateFn = (path: string, mode: 'push' | 'replace' | 'back') => Promise<void>;
+export type WizardCancelActiveWizardFn = (wizardId?: string) => Promise<void>;
 
 export class ConcreteWizardContext implements WizardContext {
   readonly params: RouteParams;
@@ -55,6 +61,7 @@ export class ConcreteWizardContext implements WizardContext {
     private readonly prevStepFn: WizardPrevStepFn,
     private readonly cancelFn: WizardCancelFn,
     private readonly navigateFn: WizardNavigateFn,
+    private readonly cancelActiveWizardFn: WizardCancelActiveWizardFn = async () => {},
   ) {
     this.route = route;
     this.params = route.params;
@@ -87,5 +94,28 @@ export class ConcreteWizardContext implements WizardContext {
 
   async cancelWizard(): Promise<void> {
     await this.cancelFn();
+  }
+
+  async cancelActiveWizard(wizardId?: string): Promise<void> {
+    await this.cancelActiveWizardFn(wizardId);
+  }
+}
+
+export class ConcreteWizardTextContext extends ConcreteWizardContext implements WizardTextContext {
+  constructor(
+    route: RouteMatch,
+    user: TelegramUser,
+    chat: TelegramChat,
+    data: Record<string, unknown>,
+    step: number,
+    totalSteps: number,
+    wizardData: Record<string, unknown>,
+    nextStepFn: WizardNextStepFn,
+    prevStepFn: WizardPrevStepFn,
+    cancelFn: WizardCancelFn,
+    navigateFn: WizardNavigateFn,
+    readonly text: string,
+  ) {
+    super(route, user, chat, data, step, totalSteps, wizardData, nextStepFn, prevStepFn, cancelFn, navigateFn);
   }
 }

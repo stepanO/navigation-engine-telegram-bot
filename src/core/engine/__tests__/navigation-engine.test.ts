@@ -489,6 +489,165 @@ describe('NavigationEngine', () => {
     });
   });
 
+  describe('cancelActiveWizard()', () => {
+    it('ctx.cancelActiveWizard() calls the configured fn with the current user/chat', async () => {
+      const calls: Array<{ chatId: number; userId: number; wizardId: string | undefined }> = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        {
+          cancelActiveWizardFn: async (user, chat, wizardId) => {
+            calls.push({ chatId: chat.id, userId: user.id, wizardId });
+          },
+        },
+      );
+
+      let capturedCtx: NavigationContext | undefined;
+      class CaptureScreen implements ScreenComponent {
+        async render(ctx: NavigationContext): Promise<ScreenView> {
+          capturedCtx = ctx;
+          return { text: 'ok' };
+        }
+      }
+
+      engine.register({ path: '/', component: CaptureScreen });
+      await engine.navigate('/', testUser, testChat, testTarget);
+      await capturedCtx!.cancelActiveWizard('myWizard');
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual({ chatId: testChat.id, userId: testUser.id, wizardId: 'myWizard' });
+    });
+
+    it('ctx.cancelActiveWizard() without wizardId passes undefined', async () => {
+      const calls: Array<{ wizardId: string | undefined }> = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { cancelActiveWizardFn: async (_u, _c, wizardId) => { calls.push({ wizardId }); } },
+      );
+
+      let capturedCtx: NavigationContext | undefined;
+      class CaptureScreen implements ScreenComponent {
+        async render(ctx: NavigationContext): Promise<ScreenView> { capturedCtx = ctx; return { text: 'ok' }; }
+      }
+      engine.register({ path: '/', component: CaptureScreen });
+      await engine.navigate('/', testUser, testChat, testTarget);
+      await capturedCtx!.cancelActiveWizard();
+
+      expect(calls[0]?.wizardId).toBeUndefined();
+    });
+
+    it('ctx.cancelActiveWizard() is a no-op when no fn is configured', async () => {
+      const { engine } = buildEngine();
+      let capturedCtx: NavigationContext | undefined;
+      class CaptureScreen implements ScreenComponent {
+        async render(ctx: NavigationContext): Promise<ScreenView> { capturedCtx = ctx; return { text: 'ok' }; }
+      }
+      engine.register({ path: '/', component: CaptureScreen });
+      await engine.navigate('/', testUser, testChat, testTarget);
+      // Should not throw
+      await expect(capturedCtx!.cancelActiveWizard('w')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('onNavigate hook', () => {
+    it('is called once after a successful navigation', async () => {
+      const events: unknown[] = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { onNavigate: (e) => events.push(e) },
+      );
+      engine.register({ path: '/', component: HomeScreen });
+      await engine.navigate('/', testUser, testChat, testTarget);
+      expect(events).toHaveLength(1);
+    });
+
+    it('receives the navigated path, userId, and chatId', async () => {
+      const events: Parameters<NonNullable<import('../navigation-engine.js').NavigationEngineConfig['onNavigate']>>[0][] = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { onNavigate: (e) => events.push(e) },
+      );
+      engine.register({ path: '/home', component: HomeScreen });
+      await engine.navigate('/home', testUser, testChat, testTarget);
+      expect(events[0]?.path).toBe('/home');
+      expect(events[0]?.userId).toBe(testUser.id);
+      expect(events[0]?.chatId).toBe(testChat.id);
+    });
+
+    it('totalDurationMs is a non-negative number', async () => {
+      const events: { totalDurationMs: number }[] = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { onNavigate: (e) => events.push(e) },
+      );
+      engine.register({ path: '/', component: HomeScreen });
+      await engine.navigate('/', testUser, testChat, testTarget);
+      expect(events[0]!.totalDurationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('includes resolver durations keyed by resolver name', async () => {
+      const events: { resolverDurationsMs: Record<string, number> }[] = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { onNavigate: (e) => events.push(e) },
+      );
+
+      class DataScreen implements ScreenComponent {
+        async render(_ctx: NavigationContext): Promise<ScreenView> { return { text: 'ok' }; }
+      }
+      engine.register({ path: '/', component: DataScreen, resolvers: { event: EventResolver } });
+      await engine.navigate('/', testUser, testChat, testTarget);
+
+      expect(events[0]?.resolverDurationsMs).toHaveProperty('event');
+      expect(events[0]!.resolverDurationsMs['event']).toBeGreaterThanOrEqual(0);
+    });
+
+    it('resolverDurationsMs is empty when no resolvers are configured', async () => {
+      const events: { resolverDurationsMs: Record<string, number> }[] = [];
+      const engine = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { onNavigate: (e) => events.push(e) },
+      );
+      engine.register({ path: '/', component: HomeScreen });
+      await engine.navigate('/', testUser, testChat, testTarget);
+      expect(events[0]?.resolverDurationsMs).toEqual({});
+    });
+
+    it('is not called when navigation throws', async () => {
+      const events: unknown[] = [];
+      const engineWithHook = new NavigationEngine(
+        new Router(),
+        new ScreenRegistry(),
+        new SpyRenderer(),
+        new InMemoryStateStore(),
+        { onNavigate: (e) => events.push(e) },
+      );
+      engineWithHook.register({ path: '/admin', component: HomeScreen, guards: [DenyGuard] });
+      await expect(engineWithHook.navigate('/admin', testUser, testChat, testTarget)).rejects.toThrow();
+      expect(events).toHaveLength(0);
+    });
+  });
+
   describe('state persistence', () => {
     it('persists and restores navigation state across engine calls', async () => {
       const store = new InMemoryStateStore();

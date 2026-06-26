@@ -31,7 +31,7 @@ import {
   WizardAtFirstStepError,
 } from '../interfaces/errors.js';
 import { buildWizardKey, buildWizardState } from './wizard-state.js';
-import { ConcreteWizardContext } from './wizard-context.js';
+import { ConcreteWizardContext, ConcreteWizardTextContext } from './wizard-context.js';
 
 /**
  * Callback that hands off to the main navigation engine.
@@ -46,6 +46,8 @@ export type WizardExitFn = (
 
 export class WizardNavigationEngine {
   private readonly wizards = new Map<string, WizardDefinition>();
+  /** Tracks which wizard is active per user/chat. Key: `${chatId}:${userId}`, value: wizardId. */
+  private readonly activeWizardByUser = new Map<string, string>();
 
   constructor(
     private readonly renderer: Renderer,
@@ -61,6 +63,65 @@ export class WizardNavigationEngine {
     return this;
   }
 
+  /** Returns the ID of the currently active wizard for the given user/chat, or undefined. */
+  async getActiveWizardId(chatId: number, userId: number): Promise<string | undefined> {
+    return this.activeWizardByUser.get(`${chatId}:${userId}`);
+  }
+
+  /**
+   * Handle a text message for the active wizard's current step.
+   * Returns true if `awaitText` was set and `onText` was called.
+   * Returns false if the current step does not expect text input.
+   */
+  async tryHandleText(
+    wizardId: string,
+    text: string,
+    user: TelegramUser,
+    chat: TelegramChat,
+    target: RenderTarget,
+  ): Promise<boolean> {
+    const def = this.wizards.get(wizardId);
+    if (!def) return false;
+    const state = await this.stateStore.get(buildWizardKey(chat.id, user.id, wizardId));
+    if (!state) return false;
+    const stepDef = def.steps[state.stepIndex];
+    if (!stepDef) return false;
+    const screen = new stepDef.screen();
+    if (!screen.awaitText || !screen.onText) return false;
+
+    const syntheticRoute = this.buildSyntheticRoute(def.id, state.stepIndex, stepDef);
+    const ctx = new ConcreteWizardTextContext(
+      syntheticRoute, user, chat, {},
+      state.stepIndex + 1, state.totalSteps, state.data,
+      async (data) => this.advanceStep(def, state, data, user, chat, target),
+      async () => this.retreatStep(def, state, user, chat, target),
+      async () => this.cancelInternal(state, user, chat, target),
+      async (path, mode) => {
+        if (mode === 'back') {
+          await this.retreatStep(def, state, user, chat, target);
+        } else {
+          await this.exitFn(path, user, chat, target);
+        }
+      },
+      text,
+    );
+    const result = await screen.onText(ctx);
+    if (result !== undefined) {
+      const renderResult = await this.renderer.render(result, target);
+      if (renderResult.messageId !== undefined) {
+        const key = buildWizardKey(chat.id, user.id, def.id);
+        const currentState = await this.stateStore.get(key);
+        if (currentState) {
+          await this.stateStore.set(
+            key,
+            buildWizardState({ ...currentState, messageId: renderResult.messageId }),
+          );
+        }
+      }
+    }
+    return true;
+  }
+
   /**
    * Start a fresh wizard session and render the first step.
    * Any existing session for this wizard/user/chat is replaced.
@@ -72,6 +133,7 @@ export class WizardNavigationEngine {
     target: RenderTarget,
   ): Promise<void> {
     const def = this.requireWizard(wizardId);
+    this.activeWizardByUser.set(`${chat.id}:${user.id}`, wizardId);
     const key = buildWizardKey(chat.id, user.id, wizardId);
 
     const state = buildWizardState({
@@ -178,6 +240,7 @@ export class WizardNavigationEngine {
 
     if (state.stepIndex >= state.totalSteps - 1) {
       // Last step complete — clean up and hand off to nav engine
+      this.activeWizardByUser.delete(`${chat.id}:${user.id}`);
       await this.stateStore.delete(key);
       await this.exitFn(state.exitPath, user, chat, target);
     } else {
@@ -223,6 +286,7 @@ export class WizardNavigationEngine {
     chat: TelegramChat,
     target: RenderTarget,
   ): Promise<void> {
+    this.activeWizardByUser.delete(`${chat.id}:${user.id}`);
     const key = buildWizardKey(chat.id, user.id, state.wizardId);
     await this.stateStore.delete(key);
     await this.exitFn(state.exitPath, user, chat, target);

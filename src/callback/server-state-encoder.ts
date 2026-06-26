@@ -34,16 +34,42 @@ export interface CallbackStore {
   set(key: string, value: string): void;
 }
 
+export interface InMemoryCallbackStoreOptions {
+  /** Maximum number of entries before the oldest is evicted. Default: unlimited. */
+  readonly maxSize?: number;
+  /** Time-to-live in milliseconds for each entry. Default: no expiry. */
+  readonly ttlMs?: number;
+}
+
 /** Default in-memory implementation. State is lost on bot restart. */
 export class InMemoryCallbackStore implements CallbackStore {
-  private readonly map = new Map<string, string>();
+  private readonly map = new Map<string, { value: string; expiresAt: number | undefined }>();
+  private readonly maxSize: number | undefined;
+  private readonly ttlMs: number | undefined;
+
+  constructor(options?: InMemoryCallbackStoreOptions) {
+    this.maxSize = options?.maxSize;
+    this.ttlMs = options?.ttlMs;
+  }
 
   get(key: string): string | undefined {
-    return this.map.get(key);
+    const entry = this.map.get(key);
+    if (entry === undefined) return undefined;
+    if (entry.expiresAt !== undefined && Date.now() > entry.expiresAt) {
+      this.map.delete(key);
+      return undefined;
+    }
+    return entry.value;
   }
 
   set(key: string, value: string): void {
-    this.map.set(key, value);
+    if (this.maxSize !== undefined && this.map.size >= this.maxSize && !this.map.has(key)) {
+      // Map preserves insertion order — evict the oldest entry.
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) this.map.delete(oldest);
+    }
+    const expiresAt = this.ttlMs !== undefined ? Date.now() + this.ttlMs : undefined;
+    this.map.set(key, { value, expiresAt });
   }
 }
 

@@ -13,6 +13,7 @@ import type { NavigationContext, TelegramUser, TelegramChat } from '../interface
 import type { RouteMatch, RouteParams, QueryParams } from '../interfaces/route.js';
 
 export type NavigateFn = (path: string, mode: 'push' | 'replace' | 'back') => Promise<void>;
+export type CancelActiveWizardFn = (wizardId?: string) => Promise<void>;
 
 export class ConcreteNavigationContext<
   TData extends Record<string, unknown> = Record<string, unknown>,
@@ -30,6 +31,7 @@ export class ConcreteNavigationContext<
     chat: TelegramChat,
     data: TData,
     private readonly navigateFn: NavigateFn,
+    private readonly cancelActiveWizardFn: CancelActiveWizardFn = async () => {},
   ) {
     this.route = route;
     this.params = route.params;
@@ -49,5 +51,9 @@ export class ConcreteNavigationContext<
 
   async back(): Promise<void> {
     await this.navigateFn('', 'back');
+  }
+
+  async cancelActiveWizard(wizardId?: string): Promise<void> {
+    await this.cancelActiveWizardFn(wizardId);
   }
 }

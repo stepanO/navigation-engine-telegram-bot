@@ -41,11 +41,30 @@ export interface BackButtonDescriptor {
   readonly text: string;
 }
 
+/** Descriptor for a Telegram Mini App button (web_app field). Not encoded in callback_data. */
+export interface WebAppButtonDescriptor {
+  readonly kind: 'web_app';
+  readonly text: string;
+  readonly url: string;
+}
+
+/** Descriptor for a Telegram login button (login_url field). Not encoded in callback_data. */
+export interface LoginButtonDescriptor {
+  readonly kind: 'login';
+  readonly text: string;
+  readonly url: string;
+  readonly forwardText?: string;
+  readonly botUsername?: string;
+  readonly requestWriteAccess?: boolean;
+}
+
 export type ButtonDescriptor =
   | NavigateButtonDescriptor
   | ActionButtonDescriptor
   | UrlButtonDescriptor
-  | BackButtonDescriptor;
+  | BackButtonDescriptor
+  | WebAppButtonDescriptor
+  | LoginButtonDescriptor;
 
 const DEFAULT_BACK_LABEL = '← Back';
 
@@ -89,5 +108,31 @@ export const Button = {
    */
   back(text: string = DEFAULT_BACK_LABEL): BackButtonDescriptor {
     return { kind: 'back', text };
+  },
+
+  /**
+   * A Telegram Mini App button. Opens the given URL as a Mini App inside Telegram.
+   * Not encoded in callback_data — passed directly as web_app field.
+   * @example Button.webApp('Open App', 'https://mini.app.url')
+   */
+  webApp(text: string, url: string): WebAppButtonDescriptor {
+    return { kind: 'web_app', text, url };
+  },
+
+  /**
+   * A Telegram login button. Authenticates the user via Telegram Login Widget.
+   * Not encoded in callback_data — passed directly as login_url field.
+   * @example Button.login('Sign in', 'https://auth.example.com/telegram')
+   */
+  login(
+    text: string,
+    url: string,
+    options?: { forwardText?: string; botUsername?: string; requestWriteAccess?: boolean },
+  ): LoginButtonDescriptor {
+    const descriptor: LoginButtonDescriptor = { kind: 'login', text, url };
+    if (options?.forwardText !== undefined) {
+      return { ...descriptor, forwardText: options.forwardText, ...options };
+    }
+    return options ? { ...descriptor, ...options } : descriptor;
   },
 } as const;

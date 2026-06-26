@@ -14,10 +14,16 @@ export function toInlineKeyboardMarkup(keyboard: KeyboardDefinition): InlineKeyb
   return {
     inline_keyboard: keyboard.inline_keyboard.map(row =>
       row.map(btn => {
-        const button: InlineKeyboardButton = btn.url
-          ? { text: btn.text, url: btn.url }
-          : { text: btn.text, callback_data: btn.callback_data ?? '' };
-        return button;
+        if (btn.web_app) {
+          return { text: btn.text, web_app: btn.web_app } as InlineKeyboardButton;
+        }
+        if (btn.login_url) {
+          return { text: btn.text, login_url: btn.login_url } as InlineKeyboardButton;
+        }
+        if (btn.url) {
+          return { text: btn.text, url: btn.url } as InlineKeyboardButton;
+        }
+        return { text: btn.text, callback_data: btn.callback_data ?? '' } as InlineKeyboardButton;
       }),
     ),
   };

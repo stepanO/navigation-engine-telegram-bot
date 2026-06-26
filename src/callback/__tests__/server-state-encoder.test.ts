@@ -150,6 +150,83 @@ describe('ServerStateEncoder', () => {
       store.set('key', 'second');
       expect(store.get('key')).toBe('second');
     });
+
+    describe('maxSize option', () => {
+      it('evicts the oldest entry when capacity is exceeded', () => {
+        const store = new InMemoryCallbackStore({ maxSize: 2 });
+        store.set('a', '1');
+        store.set('b', '2');
+        store.set('c', '3'); // evicts 'a'
+        expect(store.get('a')).toBeUndefined();
+        expect(store.get('b')).toBe('2');
+        expect(store.get('c')).toBe('3');
+      });
+
+      it('does not evict when updating an existing key', () => {
+        const store = new InMemoryCallbackStore({ maxSize: 2 });
+        store.set('a', '1');
+        store.set('b', '2');
+        store.set('a', 'updated'); // update in-place, no eviction
+        expect(store.get('a')).toBe('updated');
+        expect(store.get('b')).toBe('2');
+      });
+
+      it('respects maxSize: 1 — second insert evicts first', () => {
+        const store = new InMemoryCallbackStore({ maxSize: 1 });
+        store.set('a', '1');
+        store.set('b', '2');
+        expect(store.get('a')).toBeUndefined();
+        expect(store.get('b')).toBe('2');
+      });
+
+      it('works correctly with unlimited size by default', () => {
+        const store = new InMemoryCallbackStore();
+        for (let i = 0; i < 100; i++) {
+          store.set(`k${i}`, `v${i}`);
+        }
+        for (let i = 0; i < 100; i++) {
+          expect(store.get(`k${i}`)).toBe(`v${i}`);
+        }
+      });
+    });
+
+    describe('ttlMs option', () => {
+      beforeEach(() => jest.useFakeTimers());
+      afterEach(() => jest.useRealTimers());
+
+      it('returns the value before TTL expires', () => {
+        const store = new InMemoryCallbackStore({ ttlMs: 1000 });
+        store.set('key', 'value');
+        jest.advanceTimersByTime(500);
+        expect(store.get('key')).toBe('value');
+      });
+
+      it('returns undefined after TTL expires', () => {
+        const store = new InMemoryCallbackStore({ ttlMs: 1000 });
+        store.set('key', 'value');
+        jest.advanceTimersByTime(1001);
+        expect(store.get('key')).toBeUndefined();
+      });
+
+      it('removing expired entries does not affect other keys', () => {
+        const store = new InMemoryCallbackStore({ ttlMs: 1000 });
+        store.set('short', 'expires');
+        jest.advanceTimersByTime(500);
+        store.set('long', 'survives');
+        jest.advanceTimersByTime(600); // short is now expired (1100ms total), long is not (600ms)
+        expect(store.get('short')).toBeUndefined();
+        expect(store.get('long')).toBe('survives');
+      });
+
+      it('refreshes TTL when key is overwritten', () => {
+        const store = new InMemoryCallbackStore({ ttlMs: 1000 });
+        store.set('key', 'v1');
+        jest.advanceTimersByTime(800);
+        store.set('key', 'v2'); // reset TTL
+        jest.advanceTimersByTime(800); // 800ms since reset, still alive
+        expect(store.get('key')).toBe('v2');
+      });
+    });
   });
 
   // ── Custom store injection ─────────────────────────────────────────────────

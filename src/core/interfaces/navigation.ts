@@ -85,6 +85,18 @@ export interface NavigationContext<
 
   /** Navigate to the previous history entry, if one exists. */
   back(): Promise<void>;
+
+  /**
+   * Cancel the active wizard session for the current user.
+   *
+   * If `wizardId` is provided, cancels that specific wizard.
+   * If omitted, cancels whichever wizard is currently active.
+   * No-op when no wizard engine is configured or no wizard is active.
+   *
+   * Typical use: call from `beforeEnter()` on hub screens to clean up
+   * any stale wizard state when the user navigates away mid-wizard.
+   */
+  cancelActiveWizard(wizardId?: string): Promise<void>;
 }
 
 /**
