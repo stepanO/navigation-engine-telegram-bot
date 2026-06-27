@@ -105,3 +105,21 @@ export class InjectionError extends NavigationError {
     this.name = 'InjectionError';
   }
 }
+
+/**
+ * Snapshot recovery was attempted but no RouteSnapshot exists for the
+ * given (chatId, messageId) pair.
+ *
+ * Thrown by RouteSnapshotStore.update() when the key is absent (strict update
+ * contract). Also available for callers who want to distinguish "no snapshot
+ * found" from other navigation errors.
+ */
+export class SnapshotNotFoundError extends NavigationError {
+  constructor(
+    public readonly chatId: number,
+    public readonly messageId: number,
+  ) {
+    super(`No route snapshot found for chatId=${chatId}, messageId=${messageId}`);
+    this.name = 'SnapshotNotFoundError';
+  }
+}

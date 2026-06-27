@@ -72,6 +72,28 @@ export interface RouteDefinition {
   readonly resolvers?: ResolverMap;
   /** Static data merged into ctx.data (lowest priority, overridden by resolvers). */
   readonly data?: RouteStaticData;
+  /**
+   * Screen schema version for snapshot compatibility.
+   *
+   * Increment this number whenever the screen's data contract or layout
+   * changes in a way that would make a previously rendered message incorrect
+   * if re-rendered by the new code. Stored verbatim in every RouteSnapshot
+   * written after a successful render.
+   *
+   * ## Future migration use
+   *
+   * When recovering a snapshot, compare snapshot.screenVersion against the
+   * current definition.version. A mismatch means the screen has evolved since
+   * that message was rendered. A migration handler (not yet implemented) can:
+   *   - Re-render transparently with the new schema.
+   *   - Prompt the user to refresh.
+   *   - Reject the snapshot as too stale to recover safely.
+   *
+   * Defaults to 1 when unset. Use 1 for brand-new routes. Reserve 0 as a
+   * sentinel for snapshots created before versioning was introduced (e.g.
+   * after a downgrade from a newer library version).
+   */
+  readonly version?: number;
 }
 
 /**

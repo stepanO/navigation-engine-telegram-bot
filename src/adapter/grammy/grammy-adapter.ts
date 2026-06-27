@@ -8,6 +8,9 @@
  *      messageId comes from persisted state (previous render) or from the
  *      message that carries the button (ctx.callbackQuery.message.message_id).
  *   4. Dispatch to NavigationEngine.navigate / back / ActionDispatcher (Phase 5).
+ *   5. When the encoder returns { type: 'unknown' }, attempt snapshot recovery
+ *      via NavigationEngine.recoverNavigation(). This handles bot restarts when
+ *      using ServerStateEncoder or any other encoder that loses state.
  *
  * navigateFromContext() is the entry point for command handlers:
  *   bot.command('start', ctx => adapter.navigateFromContext(ctx, '/'));
@@ -34,6 +37,16 @@ export class GrammYAdapter {
   /**
    * Returns a grammY MiddlewareFn that handles navigation and action callback queries.
    * Register with bot.use(adapter.middleware()).
+   *
+   * ## Snapshot recovery
+   *
+   * When the encoder returns `{ type: 'unknown' }` for a callback_query, the
+   * adapter calls engine.recoverNavigation(chatId, messageId, ...) before
+   * forwarding to the next handler. This transparently re-renders the screen
+   * the button belonged to after a bot restart.
+   *
+   * recoverNavigation() is a no-op when no snapshotStore is configured on the
+   * engine (returns false immediately), so existing deployments are unaffected.
    */
   middleware(): MiddlewareFn<Context> {
     return async (ctx, next) => {
@@ -44,11 +57,9 @@ export class GrammYAdapter {
       }
 
       const decoded = this.encoder.decode(data);
-      if (decoded.type === 'unknown') {
-        await next();
-        return;
-      }
 
+      // Extract user/chat early so they are available for both the normal
+      // dispatch path and the snapshot recovery path.
       if (!ctx.from || !ctx.chat) {
         await next();
         return;
@@ -56,6 +67,27 @@ export class GrammYAdapter {
 
       const user = extractTelegramUser(ctx.from);
       const chat = extractTelegramChat(ctx.chat);
+
+      if (decoded.type === 'unknown') {
+        // The callback data cannot be decoded by the current encoder state.
+        // This happens when using ServerStateEncoder after a bot restart (the
+        // in-memory/Redis key-to-path mapping was lost) or when callback data
+        // was produced by a different encoder.
+        //
+        // Attempt snapshot recovery: look up the RouteSnapshot stored for this
+        // specific Telegram message and re-run the full navigation lifecycle.
+        // If no snapshot is found (or no snapshotStore is configured), fall
+        // through to next() so other grammY middleware can handle the update.
+        const messageId = ctx.callbackQuery?.message?.message_id;
+        if (messageId !== undefined) {
+          const target = await this.buildTarget(ctx);
+          const recovered = await this.engine.recoverNavigation(chat.id, messageId, user, chat, target);
+          if (recovered) return;
+        }
+        await next();
+        return;
+      }
+
       const target = await this.buildTarget(ctx);
 
       if (decoded.type === 'action') {

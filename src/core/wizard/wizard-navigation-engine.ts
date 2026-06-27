@@ -136,6 +136,20 @@ export class WizardNavigationEngine {
     chat: TelegramChat,
     target: RenderTarget,
   ): Promise<void> {
+    await this.startWithData(wizardId, {}, user, chat, target);
+  }
+
+  /**
+   * Start a fresh wizard session with pre-seeded data and render the first step.
+   * Any existing session for this wizard/user/chat is replaced.
+   */
+  async startWithData(
+    wizardId: string,
+    initialData: Record<string, unknown>,
+    user: TelegramUser,
+    chat: TelegramChat,
+    target: RenderTarget,
+  ): Promise<void> {
     const def = this.requireWizard(wizardId);
     this.activeWizardByUser.set(`${chat.id}:${user.id}`, wizardId);
     const key = buildWizardKey(chat.id, user.id, wizardId);
@@ -144,7 +158,7 @@ export class WizardNavigationEngine {
       wizardId,
       stepIndex: 0,
       totalSteps: def.steps.length,
-      data: {},
+      data: initialData,
       exitPath: typeof def.exitPath === 'string' ? def.exitPath : '',
       messageId: undefined,
     });
@@ -210,6 +224,19 @@ export class WizardNavigationEngine {
     const def = this.requireWizard(wizardId);
     const state = await this.requireActiveState(wizardId, chat.id, user.id);
     await this.renderStep(def, state, user, chat, target);
+  }
+
+  /**
+   * Clear any active wizard session for the given user/chat without navigating.
+   * Use this when the caller handles navigation themselves (e.g. cancel → /admin).
+   */
+  async clearActiveWizard(chatId: number, userId: number): Promise<void> {
+    const key = `${chatId}:${userId}`;
+    const activeId = this.activeWizardByUser.get(key);
+    if (activeId !== undefined) {
+      this.activeWizardByUser.delete(key);
+      await this.stateStore.delete(buildWizardKey(chatId, userId, activeId));
+    }
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────

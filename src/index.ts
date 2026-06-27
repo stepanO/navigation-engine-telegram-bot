@@ -53,7 +53,12 @@ export {
   WizardNotActiveError,
   WizardAtFirstStepError,
   InjectionError,
+  SnapshotNotFoundError,
 } from './core/interfaces/errors.js';
+
+// Route Snapshots
+export type { RouteSnapshot, RouteSnapshotStore } from './core/snapshot/route-snapshot.js';
+export { InMemoryRouteSnapshotStore } from './core/snapshot/in-memory-route-snapshot-store.js';
 
 // Router
 export { Router } from './core/router/router.js';

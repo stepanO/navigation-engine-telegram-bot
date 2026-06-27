@@ -35,6 +35,7 @@ import type { Injector } from '../../core/di/injector.js';
 import type { WizardDefinition } from '../../core/wizard/wizard-definition.js';
 import type { WizardStateStore } from '../../core/wizard/wizard-state.js';
 import type { NavigationEngineConfig } from '../../core/engine/navigation-engine.js';
+import type { RouteSnapshotStore } from '../../core/snapshot/route-snapshot.js';
 import { Router } from '../../core/router/router.js';
 import { ScreenRegistry } from '../../core/registry/screen-registry.js';
 import { InMemoryStateStore } from '../../core/state/in-memory-state-store.js';
@@ -84,6 +85,24 @@ export interface GrammYNavigationEngineOptions {
     resolverDurationsMs: Record<string, number>;
     totalDurationMs: number;
   }) => void;
+  /**
+   * Persistence store for route snapshots.
+   *
+   * When provided, a RouteSnapshot is written after every successful render.
+   * Snapshots enable transparent screen recovery when a callback arrives after
+   * a bot restart and the encoder can no longer decode the callback data (e.g.
+   * ServerStateEncoder with an empty in-memory store).
+   *
+   * When absent (the default), snapshot persistence and recovery are disabled.
+   * All existing behaviour is preserved — this option is strictly additive.
+   *
+   * For tests use InMemoryRouteSnapshotStore.
+   * For production implement RouteSnapshotStore against Redis or Postgres.
+   *
+   * @see RouteSnapshotStore
+   * @see InMemoryRouteSnapshotStore
+   */
+  readonly snapshotStore?: RouteSnapshotStore;
 }
 
 export class GrammYNavigationEngine {
@@ -120,6 +139,7 @@ export class GrammYNavigationEngine {
       ...(options.maxHistory !== undefined ? { maxHistory: options.maxHistory } : {}),
       ...(options.injector !== undefined ? { injector: options.injector } : {}),
       ...(options.onNavigate !== undefined ? { onNavigate: options.onNavigate } : {}),
+      ...(options.snapshotStore !== undefined ? { snapshotStore: options.snapshotStore } : {}),
       cancelActiveWizardFn: (user, chat, wizardId) => cancelRef.fn(user, chat, wizardId),
     };
 
@@ -204,6 +224,59 @@ export class GrammYNavigationEngine {
     const chat = extractTelegramChat(ctx.chat);
     const target = await this.buildRenderTarget(ctx);
     await this.getOrCreateWizardEngine().cancel(wizardId, user, chat, target);
+  }
+
+  /**
+   * Start a wizard session with pre-seeded data. Useful when preceding nav
+   * screens have already collected context (e.g. projectId, templateId) that
+   * the wizard steps need but should not re-fetch.
+   */
+  async startWizardWithData(
+    ctx: Context,
+    wizardId: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    if (!ctx.from || !ctx.chat) {
+      throw new Error('startWizardWithData requires ctx.from and ctx.chat');
+    }
+    const user = extractTelegramUser(ctx.from);
+    const chat = extractTelegramChat(ctx.chat);
+    const target = await this.buildRenderTarget(ctx);
+    await this.getOrCreateWizardEngine().startWithData(wizardId, data, user, chat, target);
+  }
+
+  /**
+   * Advance the active wizard to the next step from an external grammY handler.
+   * Use this to bridge legacy callback handlers into wizard flows (e.g. a date
+   * picker whose callbacks are handled outside the wizard engine).
+   */
+  async nextWizardStep(
+    ctx: Context,
+    wizardId: string,
+    data?: Record<string, unknown>,
+  ): Promise<void> {
+    if (!ctx.from || !ctx.chat) {
+      throw new Error('nextWizardStep requires ctx.from and ctx.chat');
+    }
+    const user = extractTelegramUser(ctx.from);
+    const chat = extractTelegramChat(ctx.chat);
+    const target = await this.buildRenderTarget(ctx);
+    await this.getOrCreateWizardEngine().nextStep(wizardId, data, user, chat, target);
+  }
+
+  /**
+   * Go back one step in the active wizard from an external grammY handler.
+   * Throws WizardAtFirstStepError if already on the first step — callers should
+   * catch this and navigate to the preceding screen manually.
+   */
+  async prevWizardStep(ctx: Context, wizardId: string): Promise<void> {
+    if (!ctx.from || !ctx.chat) {
+      throw new Error('prevWizardStep requires ctx.from and ctx.chat');
+    }
+    const user = extractTelegramUser(ctx.from);
+    const chat = extractTelegramChat(ctx.chat);
+    const target = await this.buildRenderTarget(ctx);
+    await this.getOrCreateWizardEngine().prevStep(wizardId, user, chat, target);
   }
 
   /**
@@ -296,6 +369,27 @@ export class GrammYNavigationEngine {
     await this.adapter.replaceFromContext(ctx, path);
   }
 
+  /**
+   * Clear the active wizard session without navigating anywhere.
+   * Use this when the caller handles navigation themselves (e.g. cancel → /admin).
+   * Safe to call when no wizard is active — it is a no-op in that case.
+   */
+  async clearWizardState(ctx: Context): Promise<void> {
+    if (!ctx.from || !ctx.chat) return;
+    if (!this.wizardEngine) return;
+    await this.wizardEngine.clearActiveWizard(ctx.chat.id, ctx.from.id);
+  }
+
+  /**
+   * Clear the active wizard session by bare user/chat IDs.
+   * Use this from action handlers or inline-result handlers where grammY
+   * Context does not carry `ctx.chat` (e.g. chosen_inline_result updates).
+   */
+  async clearWizardStateForUser(chatId: number, userId: number): Promise<void> {
+    if (!this.wizardEngine) return;
+    await this.wizardEngine.clearActiveWizard(chatId, userId);
+  }
+
   // ─── Private ──────────────────────────────────────────────────────────────
 
   private getOrCreateWizardEngine(): WizardNavigationEngine {
@@ -311,14 +405,18 @@ export class GrammYNavigationEngine {
 
   /**
    * Builds a RenderTarget from a grammY Context.
-   * Used for wizard text-message handling where there is no callback query.
+   * Includes callbackQueryId when present so wizard renderStep can answer the spinner.
    */
   private async buildRenderTarget(ctx: Context): Promise<RenderTarget> {
     const chatId = ctx.chat!.id;
     const userId = ctx.from!.id;
     const state = await this.stateStore.get(buildStateKey(chatId, userId));
     const messageId = state?.messageId ?? ctx.message?.message_id;
-    return messageId !== undefined ? { chatId, userId, messageId } : { chatId, userId };
+    const callbackQueryId = ctx.callbackQuery?.id;
+    const base = callbackQueryId !== undefined
+      ? { chatId, userId, callbackQueryId }
+      : { chatId, userId };
+    return messageId !== undefined ? { ...base, messageId } : base;
   }
 
   /** Builds a RenderTarget from bare IDs only (used in cancelActiveWizard path). */

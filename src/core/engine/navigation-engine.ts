@@ -16,6 +16,7 @@
  *  12. Call renderer.answerCallbackQuery(target).
  *  13. Call screen.afterRender().
  *  14. Push/replace/leave NavigationStack and persist state.
+ *  15. Persist RouteSnapshot (if snapshotStore is configured).
  *
  * NavigationEngine is framework-agnostic. The grammY adapter (Phase 2)
  * wraps it and translates grammY Context into RenderTarget + TelegramUser/Chat.
@@ -23,10 +24,11 @@
 
 import type { RouteDefinition, RouteMatch } from '../interfaces/route.js';
 import type { TelegramUser, TelegramChat } from '../interfaces/navigation.js';
-import type { RenderTarget, Renderer } from '../interfaces/renderer.js';
+import type { RenderTarget, Renderer, RenderResult } from '../interfaces/renderer.js';
 import type { StateStore } from '../interfaces/state.js';
 import type { MiddlewareConstructor, NextFn } from '../interfaces/middleware.js';
 import type { Injector } from '../di/injector.js';
+import type { RouteSnapshotStore, RouteSnapshot } from '../snapshot/route-snapshot.js';
 import { NavigationGuardError, ResolverError, NoHistoryError } from '../interfaces/errors.js';
 import { buildStateKey } from '../interfaces/state.js';
 import { Router } from '../router/router.js';
@@ -55,12 +57,28 @@ export interface NavigationEngineConfig {
     resolverDurationsMs: Record<string, number>;
     totalDurationMs: number;
   }) => void;
+  /**
+   * Persistence store for route snapshots.
+   *
+   * When provided, NavigationEngine writes a RouteSnapshot after every
+   * successful render (step 15 above). Snapshots enable recovery via
+   * recoverNavigation() when the callback data cannot be decoded (e.g. after
+   * a bot restart using ServerStateEncoder).
+   *
+   * When absent, snapshot persistence and recovery are completely disabled.
+   * All existing behaviour is preserved — this option is strictly additive.
+   *
+   * @see RouteSnapshotStore
+   * @see InMemoryRouteSnapshotStore (reference implementation for tests/dev)
+   */
+  readonly snapshotStore?: RouteSnapshotStore;
 }
 
 export class NavigationEngine {
   private readonly middlewares: MiddlewareConstructor[] = [];
   private readonly injector: Injector | undefined;
   private readonly resolverCache = new Map<string, { value: unknown; expiresAt: number }>();
+  private readonly snapshotStore: RouteSnapshotStore | undefined;
 
   constructor(
     private readonly router: Router,
@@ -70,6 +88,7 @@ export class NavigationEngine {
     private readonly config: NavigationEngineConfig = {},
   ) {
     this.injector = config.injector;
+    this.snapshotStore = config.snapshotStore;
   }
 
   /**
@@ -133,6 +152,64 @@ export class NavigationEngine {
 
     const previousEntry = stack.back();
     await this.executeNavigation(previousEntry.path, 'back', user, chat, target, stack);
+  }
+
+  /**
+   * Attempt to recover navigation for a specific Telegram message after a
+   * bot restart or encoder-state loss.
+   *
+   * ## When to call this
+   *
+   * Call recoverNavigation() when the callback encoder returns `{ type: 'unknown' }`
+   * for a callback_query, meaning the callback data cannot be decoded by the
+   * current encoder state (e.g. ServerStateEncoder after a restart, where the
+   * in-memory or Redis key-to-path mapping was lost).
+   *
+   * ## What it does
+   *
+   * 1. Looks up the RouteSnapshot for (chatId, messageId) in the snapshotStore.
+   * 2. If found, calls executeNavigation(snapshot.route, 'replace', ...) which
+   *    runs the full lifecycle: router → guards → resolvers → render → new snapshot.
+   * 3. Returns true if recovery succeeded, false if the snapshot was not found or
+   *    no snapshotStore is configured.
+   *
+   * ## Why 'replace' mode
+   *
+   * After a restart the NavigationStack in StateStore is empty. Using 'replace'
+   * on an empty stack triggers the push-fallback in NavigationStack, seeding
+   * history with one entry (the recovered route). Using 'push' would behave
+   * identically but 'replace' communicates intent: we are reconstructing the
+   * current state, not navigating forward.
+   *
+   * ## Error propagation
+   *
+   * If the recovered route is no longer registered (RouteNotFoundError), or a
+   * guard rejects it (NavigationGuardError), or a resolver fails (ResolverError),
+   * the error propagates to the caller exactly as a normal navigation error would.
+   * recoverNavigation() does not swallow errors from the navigation lifecycle.
+   *
+   * @param chatId   Telegram chat ID (from callback_query.message.chat.id).
+   * @param messageId Telegram message ID (from callback_query.message.message_id).
+   * @param user     Telegram user who pressed the button.
+   * @param chat     Telegram chat where the button was pressed.
+   * @param target   RenderTarget with at minimum chatId and userId.
+   * @returns true when recovery was performed; false when no snapshot was found
+   *          or no snapshotStore is configured.
+   */
+  async recoverNavigation(
+    chatId: number,
+    messageId: number,
+    user: TelegramUser,
+    chat: TelegramChat,
+    target: RenderTarget,
+  ): Promise<boolean> {
+    if (!this.snapshotStore) return false;
+
+    const snapshot = await this.snapshotStore.find(chatId, messageId);
+    if (!snapshot) return false;
+
+    await this.executeNavigation(snapshot.route, 'replace', user, chat, target);
+    return true;
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
@@ -225,6 +302,12 @@ export class NavigationEngine {
 
       await this.stateStore.set(stateKey, stack.toState());
 
+      // ── Snapshot persistence ───────────────────────────────────────────────
+      // Persists the minimal serializable state needed to re-render this screen
+      // after a bot restart. Keyed by (chatId, messageId) so it can be found
+      // from callback_query.message.message_id without user session state.
+      await this.persistSnapshot(path, routeMatch, chat.id, target, renderResult);
+
       this.config.onNavigate?.({
         path,
         userId: user.id,
@@ -233,6 +316,37 @@ export class NavigationEngine {
         totalDurationMs: Date.now() - startMs,
       });
     });
+  }
+
+  /**
+   * Write a RouteSnapshot after a successful render.
+   * The final messageId is resolved in priority order:
+   *   1. renderResult.messageId  — set when the renderer sent a new message.
+   *   2. target.messageId        — set when the renderer edited an existing message.
+   * If neither is known the snapshot cannot be keyed and is skipped silently.
+   */
+  private async persistSnapshot(
+    path: string,
+    routeMatch: RouteMatch,
+    chatId: number,
+    target: RenderTarget,
+    renderResult: RenderResult,
+  ): Promise<void> {
+    if (!this.snapshotStore) return;
+
+    const messageId = renderResult.messageId ?? target.messageId;
+    if (messageId === undefined) return;
+
+    const snapshot: RouteSnapshot = {
+      messageId,
+      chatId,
+      route: path,
+      params: routeMatch.params,
+      query: routeMatch.query,
+      screenVersion: routeMatch.definition.version ?? 1,
+      renderedAt: new Date(),
+    };
+    await this.snapshotStore.save(snapshot);
   }
 
   private async loadStack(

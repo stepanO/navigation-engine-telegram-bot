@@ -11,20 +11,21 @@ Instead of sending a new message on every action, the library edits the **same m
 - **SPA-style routing** — one message, edited in-place with full back/forward history
 - **Route params & query strings** — `/events/:id?page=1`
 - **Guards** — block or redirect before a screen activates
-- **Resolvers** — fetch async data (API, DB) before the screen renders
+- **Resolvers** — fetch async data (API, DB) before the screen renders; optional per-route TTL cache
 - **Middleware** — cross-cutting concerns (sessions, logging, i18n)
-- **Wizards** — multi-step conversational flows with per-step navigation
+- **Wizards** — multi-step conversational flows with text input and per-step navigation
 - **UI Components** — composable title, section, stat-card, pagination, confirm-dialog components
 - **Screen Builder / Keyboard Builder** — fluent APIs for building `ScreenView`s
 - **Callback encoders** — three strategies for Telegram's 64-byte `callback_data` limit:
-  - `SimpleCallbackEncoder` — stores the full path inline (default)
+  - `SimpleCallbackEncoder` — stores the full path inline (default, zero config)
   - `CompactCallbackEncoder` — base-36 route IDs + params (≤64 bytes for most paths)
   - `ServerStateEncoder` — stores paths server-side; only an 8-byte key in `callback_data`
+- **Route Snapshots** — restart-safe navigation: screens recover transparently after a bot restart
 - **Singleton screens** — one instance shared across all renders
 - **Lazy route loading** — pass `() => ScreenClass` to defer module loading
-- **Resolver caching** — per-user/route TTL cache avoids redundant fetches
 - **Keyboard diffing** — skips Telegram API call when the view hasn't changed
 - **Dependency injection** — `SimpleInjector` with `InjectionToken` and factory overrides
+- **Action Dispatcher** — side-effect buttons that don't navigate (`action:deleteEvent:42`)
 
 ---
 
@@ -76,19 +77,17 @@ class EventsScreen implements ScreenComponent {
   }
 }
 
-// 2. Bootstrap the engine
+// 2. Bootstrap
 const bot = new Bot(process.env.BOT_TOKEN!);
-const engine = new GrammYNavigationEngine(bot, {
-  routes: [
-    { path: '/', component: HomeScreen },
-    { path: '/events', component: EventsScreen },
-  ],
-});
+const nav = new GrammYNavigationEngine(bot.api);
 
-// 3. Entry point — /start sends the first message
-bot.command('start', async (ctx) => {
-  await engine.send('/', ctx);
-});
+nav
+  .register({ path: '/',       component: HomeScreen })
+  .register({ path: '/events', component: EventsScreen });
+
+// 3. Wire middleware and entry point
+bot.use(nav.middleware());
+bot.command('start', ctx => nav.navigate(ctx, '/'));
 
 bot.start();
 ```
@@ -100,37 +99,45 @@ bot.start();
 ### Routes
 
 ```typescript
-engine.register({
-  path: '/events/:id',       // named param
+nav.register({
+  path: '/events/:id',
   component: EventDetailScreen,
-  guards: [AuthGuard],       // run before activation
-  resolvers: { event: EventResolver },  // populate ctx.data.event
-  data: { title: 'Event Detail' },      // static metadata
+  guards:    [AuthGuard],
+  resolvers: { event: EventResolver },
+  data:      { title: 'Event Detail' },
+  version:   1,                         // schema version for snapshot migration
 });
 ```
 
 ### Screens
 
-A screen is a class with a single `render(ctx)` method:
+A screen is a class with a `render(ctx)` method and optional lifecycle hooks:
 
 ```typescript
 class EventDetailScreen implements ScreenComponent {
+  async beforeEnter(ctx: NavigationContext): Promise<void> {
+    await ctx.cancelActiveWizard(); // clean up any stale wizard on entry
+  }
+
   async render(ctx: NavigationContext): Promise<ScreenView> {
     const event = ctx.data['event'] as { name: string };
     return {
-      text: bold(`Event: ${event.name}`),
+      text: `<b>${event.name}</b>`,
       parseMode: 'HTML',
       keyboard: {
-        inline: [[
-          { text: '← Back', callbackData: 'nav:__back__' },
-        ]],
+        inline: [[{ text: '← Back', callbackData: 'nav:__back__' }]],
       },
     };
+  }
+
+  async afterRender(ctx: NavigationContext): Promise<void> {
+    // side-effects allowed here (analytics, etc.)
   }
 }
 ```
 
 Available on `ctx`:
+
 | Property | Type | Description |
 |----------|------|-------------|
 | `ctx.params` | `Record<string, string>` | URL params like `:id` |
@@ -138,51 +145,50 @@ Available on `ctx`:
 | `ctx.data` | `Record<string, unknown>` | Populated by resolvers & middleware |
 | `ctx.user` | `TelegramUser` | Current Telegram user |
 | `ctx.chat` | `TelegramChat` | Current Telegram chat |
-| `ctx.navigate(path)` | `Promise<void>` | Navigate from within `render()` |
+| `ctx.navigate(path)` | `Promise<void>` | Navigate (push) |
 | `ctx.replace(path)` | `Promise<void>` | Replace current entry |
 | `ctx.back()` | `Promise<void>` | Go back in history |
+| `ctx.cancelActiveWizard(id?)` | `Promise<void>` | Cancel active wizard |
 
 ### Guards
 
 ```typescript
-import { Guard, GuardResult, NavigationContext } from 'navigation-engine-telegram-bot';
+import type { Guard, GuardResult, NavigationContext } from 'navigation-engine-telegram-bot';
 
 class AuthGuard implements Guard {
   async canActivate(ctx: NavigationContext): Promise<GuardResult> {
     if (ctx.data['session']) return { allowed: true };
     return { allowed: false, redirect: '/login' };
-    // or: return { allowed: false, message: 'You must log in.' };
+    // or to throw: return { allowed: false, message: 'Access denied.' };
   }
 }
 ```
 
-Return `{ allowed: false }` without `redirect` to throw `NavigationGuardError`.
-
 ### Resolvers
 
 ```typescript
-import { Resolver, ResolverConstructor } from 'navigation-engine-telegram-bot';
+import type { Resolver } from 'navigation-engine-telegram-bot';
 
 class EventResolver implements Resolver<Event> {
-  // optional: static cacheTtl = 60_000; // ms — cache per user/route/params
+  static cacheTtl = 30_000; // ms — optional per-user/route/params TTL cache
+
   async resolve(ctx: NavigationContext): Promise<Event> {
     return db.events.findById(ctx.params['id']!);
   }
 }
 
-// Attach to a route:
-engine.register({
+nav.register({
   path: '/events/:id',
   component: EventDetailScreen,
   resolvers: { event: EventResolver },
 });
-// Access in screen: ctx.data['event'] as Event
+// In screen: ctx.data['event'] as Event
 ```
 
 ### Middleware
 
 ```typescript
-import { NavigationMiddleware, NextFn } from 'navigation-engine-telegram-bot';
+import type { NavigationMiddleware, NextFn } from 'navigation-engine-telegram-bot';
 
 class SessionMiddleware implements NavigationMiddleware {
   async handle(ctx: NavigationContext, next: NextFn): Promise<void> {
@@ -191,7 +197,7 @@ class SessionMiddleware implements NavigationMiddleware {
   }
 }
 
-engine.use(SessionMiddleware);
+nav.use(SessionMiddleware);
 ```
 
 ### Screen Builder
@@ -202,56 +208,171 @@ import { ScreenBuilder, Button } from 'navigation-engine-telegram-bot';
 class HomeScreen implements ScreenComponent {
   async render(ctx: NavigationContext): Promise<ScreenView> {
     return new ScreenBuilder()
-      .html(bold('Home'))
+      .html('<b>Home</b>')
       .row(Button.navigate('Events', '/events'))
       .row(Button.navigate('Settings', '/settings'))
+      .row(Button.url('Help', 'https://example.com/help'))
       .build();
   }
 }
 ```
 
-### Callback Encoders
+### Actions
 
-**Default (`SimpleCallbackEncoder`)** — stores `nav:/path?query=value` inline. Throws `CallbackDataTooLongError` for paths > 64 bytes.
-
-**`CompactCallbackEncoder`** — registers routes with 2-character base-36 IDs. Best for many routes with short params.
+Button-triggered side effects that do **not** navigate:
 
 ```typescript
-import { GrammYNavigationEngine, CompactCallbackEncoder } from 'navigation-engine-telegram-bot';
+import type { ActionHandler, ActionContext } from 'navigation-engine-telegram-bot';
 
-const engine = new GrammYNavigationEngine(bot, {
+class DeleteEventHandler implements ActionHandler {
+  async handle(ctx: ActionContext): Promise<void> {
+    await db.events.delete(ctx.params[0]!);
+    await ctx.navigate('/events'); // optionally navigate after
+  }
+}
+
+nav.registerAction('deleteEvent', DeleteEventHandler);
+
+// In a screen:
+Button.action('Delete', 'deleteEvent', [eventId])
+// emits callback_data: "action:deleteEvent:42"
+```
+
+### Callback Encoders
+
+**Default (`SimpleCallbackEncoder`)** — stores `nav:/path?query=value` inline. Throws `CallbackDataTooLongError` for paths > 64 bytes. Zero config.
+
+**`CompactCallbackEncoder`** — assigns 2-character base-36 route IDs. Use `stableId` to prevent ID shifts when routes are reordered:
+
+```typescript
+import { CompactCallbackEncoder } from 'navigation-engine-telegram-bot';
+
+const nav = new GrammYNavigationEngine(bot.api, {
   encoder: new CompactCallbackEncoder(),
-  routes: [...],
+});
+
+nav
+  .register({ path: '/events',     stableId: 'ev', component: EventsScreen })
+  .register({ path: '/events/:id', stableId: 'ed', component: EventDetailScreen });
+```
+
+**`ServerStateEncoder`** — stores the full path server-side; emits only an 8-byte key. Combine with `snapshotStore` for restart safety:
+
+```typescript
+import { ServerStateEncoder, InMemoryCallbackStore } from 'navigation-engine-telegram-bot';
+
+const nav = new GrammYNavigationEngine(bot.api, {
+  encoder: new ServerStateEncoder(
+    new InMemoryCallbackStore({ maxSize: 10_000, ttlMs: 24 * 60 * 60_000 }),
+  ),
 });
 ```
 
-**`ServerStateEncoder`** — stores the full path in a server-side store; emits only an 8-byte key.
+### Route Snapshots (restart-safe navigation)
+
+By default, pressing a button on an old Telegram message after a bot restart fails for encoders that store state in memory (`ServerStateEncoder`). Enable Route Snapshots to recover transparently:
 
 ```typescript
-import { GrammYNavigationEngine, ServerStateEncoder, InMemoryCallbackStore } from 'navigation-engine-telegram-bot';
+import { InMemoryRouteSnapshotStore } from 'navigation-engine-telegram-bot';
 
-const engine = new GrammYNavigationEngine(bot, {
-  encoder: new ServerStateEncoder(new InMemoryCallbackStore()),
-  routes: [...],
+const nav = new GrammYNavigationEngine(bot.api, {
+  encoder: new ServerStateEncoder(redisCallbackStore),
+  snapshotStore: new InMemoryRouteSnapshotStore(), // swap for Redis in production
 });
+```
+
+**How it works:**
+
+1. After every successful render the engine writes a `RouteSnapshot` keyed by `(chatId, messageId)`.
+2. When a callback arrives and the encoder cannot decode the data (returns `{ type: 'unknown' }`), the adapter looks up the snapshot for that message.
+3. If found, the engine re-runs the full navigation lifecycle (guards → resolvers → render) and the user sees a fresh screen — as if nothing happened.
+
+Implement `RouteSnapshotStore` against Redis or Postgres for production:
+
+```typescript
+export interface RouteSnapshotStore {
+  save(snapshot: RouteSnapshot): Promise<void>;
+  find(chatId: number, messageId: number): Promise<RouteSnapshot | null>;
+  delete(chatId: number, messageId: number): Promise<void>;
+  update(snapshot: RouteSnapshot): Promise<void>;
+}
+```
+
+**Screen versioning** — bump `version` on a route when the screen's data contract changes. The stored `screenVersion` lets future migration logic detect stale snapshots:
+
+```typescript
+nav.register({ path: '/profile', component: ProfileScreen, version: 2 });
+// snapshot.screenVersion === 2 → compare against current definition.version at recovery time
+```
+
+### Wizards
+
+Multi-step conversational flows integrated into `GrammYNavigationEngine`:
+
+```typescript
+import { WizardScreen } from 'navigation-engine-telegram-bot';
+import type { WizardContext, WizardDefinition, WizardTextContext } from 'navigation-engine-telegram-bot';
+
+class NameStep extends WizardScreen {
+  readonly awaitText = true as const; // intercept the next text message
+
+  async onStep(ctx: WizardContext): Promise<ScreenView> {
+    return new ScreenBuilder().html('Enter your name:').build();
+  }
+
+  async onText(ctx: WizardTextContext): Promise<ScreenView | void> {
+    if (ctx.text.length < 2) {
+      return new ScreenBuilder().html('Name too short, try again:').build();
+    }
+    await ctx.nextStep({ name: ctx.text });
+  }
+}
+
+class ConfirmStep extends WizardScreen {
+  async onStep(ctx: WizardContext): Promise<ScreenView> {
+    return new ScreenBuilder()
+      .html(`Confirm name: <b>${ctx.wizardData['name']}</b>`)
+      .row(Button.navigate('✓ Confirm', '/done'))
+      .row(Button.back('← Back'))
+      .build();
+  }
+}
+
+const createProfileWizard: WizardDefinition = {
+  id: 'create-profile',
+  steps: [
+    { screen: NameStep },
+    { screen: ConfirmStep },
+  ],
+  exitPath: '/profile',
+};
+
+nav.registerWizard(createProfileWizard);
+
+// Start from a command:
+bot.command('create', ctx => nav.startWizard(ctx, 'create-profile'));
 ```
 
 ### Lazy Route Loading
 
 ```typescript
-engine.register({
-  path: '/heavy-screen',
-  component: () => import('./heavy-screen.js').then(m => m.HeavyScreen),
+nav.register({
+  path: '/dashboard',
+  component: () => DashboardScreen,         // arrow function → lazy
 });
-// Actual: arrow-function form (no async needed for already-imported modules):
-engine.register({ path: '/dashboard', component: () => DashboardScreen });
+
+// Async import (deferred module loading):
+nav.register({
+  path: '/heavy',
+  component: () => import('./heavy.js').then(m => m.HeavyScreen),
+});
 ```
 
 ### Singleton Screens
 
 ```typescript
-class DashboardScreen implements ScreenComponent {
-  static readonly singleton = true as const;
+class NavBar implements ScreenComponent {
+  static readonly singleton = true as const; // one instance, reused across navigations
 
   async render(ctx: NavigationContext): Promise<ScreenView> { /* ... */ }
 }
@@ -262,51 +383,44 @@ class DashboardScreen implements ScreenComponent {
 ```typescript
 import { SimpleInjector, InjectionToken } from 'navigation-engine-telegram-bot';
 
-const DB_TOKEN = new InjectionToken<Database>('Database');
+const DB = new InjectionToken<Database>('Database');
 
 const injector = new SimpleInjector();
-injector.provide(DB_TOKEN, new PostgresDatabase());
+injector.bind(DB, new PostgresDatabase());
 
-const engine = new GrammYNavigationEngine(bot, { injector, routes: [...] });
-```
+const nav = new GrammYNavigationEngine(bot.api, { injector });
 
-### Wizards
+class EventResolver implements Resolver<Event> {
+  private readonly db: Database;
 
-Multi-step conversational flows where each step is a screen:
+  static factory(injector: Injector) {
+    return new EventResolver(injector.get(DB));
+  }
 
-```typescript
-import { WizardNavigationEngine, WizardScreen } from 'navigation-engine-telegram-bot';
-import type { WizardContext, WizardDefinition } from 'navigation-engine-telegram-bot';
+  constructor(db: Database) { this.db = db; }
 
-class Step1Screen extends WizardScreen {
-  async render(ctx: WizardContext): Promise<ScreenView> {
-    return new ScreenBuilder().text('Step 1: Enter your name').build();
+  async resolve(ctx: NavigationContext): Promise<Event> {
+    return this.db.events.findById(ctx.params['id']!);
   }
 }
-
-const wizard: WizardDefinition = {
-  id: 'create-event',
-  steps: [Step1Screen, Step2Screen, Step3Screen],
-};
-
-const wizardEngine = new WizardNavigationEngine(engine);
-wizardEngine.register(wizard);
 ```
 
 ---
 
 ## Navigation Stack
 
-The history model mirrors a browser's tab:
+The history model mirrors a browser tab:
 
 - `navigate(path)` — push to stack, discard forward history
-- `back()` — move cursor backwards; throws `NoHistoryError` at position 0
-- `replace(path)` — replace current entry in-place
-- Default max history depth: 50 (configurable via `NavigationEngineConfig.maxHistoryEntries`)
+- `back()` — move cursor backwards; throws `NoHistoryError` at the first entry
+- `replace(path)` — overwrite current entry in-place (history length unchanged)
+- Default max history depth: 50, configurable via `maxHistory`
 
 ---
 
 ## State Persistence
+
+### Navigation state (history stack)
 
 Swap in any `StateStore` implementation:
 
@@ -320,6 +434,21 @@ export interface StateStore {
 
 `InMemoryStateStore` is included. Implement Redis or Postgres adapters for production.
 
+### Route Snapshots (rendered message state)
+
+For restart recovery, implement `RouteSnapshotStore` (keyed by `(chatId, messageId)`):
+
+```typescript
+export interface RouteSnapshotStore {
+  save(snapshot: RouteSnapshot): Promise<void>;
+  find(chatId: number, messageId: number): Promise<RouteSnapshot | null>;
+  delete(chatId: number, messageId: number): Promise<void>;
+  update(snapshot: RouteSnapshot): Promise<void>;
+}
+```
+
+`InMemoryRouteSnapshotStore` is included for tests and development.
+
 ---
 
 ## API Reference
@@ -329,18 +458,34 @@ export interface StateStore {
 The one-stop facade for grammY bots.
 
 ```typescript
-new GrammYNavigationEngine(bot, options)
+new GrammYNavigationEngine(api: Api, options?: GrammYNavigationEngineOptions)
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `routes` | `RouteDefinition[]` | `[]` | Routes to register on construction |
 | `encoder` | `CallbackDataEncoder` | `SimpleCallbackEncoder` | Callback data encoding strategy |
-| `stateStore` | `StateStore` | `InMemoryStateStore` | History persistence |
-| `injector` | `Injector` | none | DI injector for screens/guards/resolvers |
-| `maxHistoryEntries` | `number` | `50` | Max history depth per user/chat |
+| `stateStore` | `StateStore` | `InMemoryStateStore` | Navigation stack persistence |
+| `snapshotStore` | `RouteSnapshotStore` | none | Route snapshot persistence for restart recovery |
+| `wizardStateStore` | `WizardStateStore` | `InMemoryWizardStateStore` | Wizard session persistence |
+| `injector` | `Injector` | none | DI injector for screens/guards/resolvers/middleware |
+| `maxHistory` | `number` | `50` | Max history depth per user/chat |
+| `onError` | `(err, ctx, answerCbq) => Promise<void>` | rethrow | Navigation error handler |
+| `onNavigate` | `(event) => void` | none | Navigation telemetry callback |
 
-Methods: `register(route)`, `use(middleware)`, `send(path, ctx)`, `navigate(path, ctx)`, `back(ctx)`, `replace(path, ctx)`.
+Methods:
+
+| Method | Description |
+|--------|-------------|
+| `register(definition)` | Register a route. Fluent — returns `this`. |
+| `registerWizard(definition)` | Register a wizard. Fluent. |
+| `registerAction(name, handler)` | Register an action handler. Fluent. |
+| `use(middleware)` | Add global navigation middleware. Fluent. |
+| `middleware()` | Returns a grammY `MiddlewareFn` — pass to `bot.use()`. |
+| `navigate(ctx, path)` | Navigate programmatically (e.g. from a command handler). |
+| `replace(ctx, path)` | Replace current history entry programmatically. |
+| `startWizard(ctx, wizardId)` | Start a wizard session. |
+| `cancelWizard(ctx, wizardId)` | Cancel a wizard session and navigate to `exitPath`. |
+| `startWizardWithData(ctx, id, data)` | Start a wizard with pre-seeded data. |
 
 ### `NavigationEngine` (framework-agnostic)
 
@@ -348,7 +493,7 @@ Methods: `register(route)`, `use(middleware)`, `send(path, ctx)`, `navigate(path
 new NavigationEngine(router, registry, renderer, stateStore, config?)
 ```
 
-Methods: `register(route)`, `use(middleware)`, `navigate(path, user, chat, target)`, `back(user, chat, target)`, `replace(path, user, chat, target)`.
+Methods: `register(definition)`, `use(middleware)`, `navigate(path, user, chat, target)`, `back(user, chat, target)`, `replace(path, user, chat, target)`, `recoverNavigation(chatId, messageId, user, chat, target)`.
 
 ---
 
@@ -356,14 +501,19 @@ Methods: `register(route)`, `use(middleware)`, `navigate(path, user, chat, targe
 
 | Error | When |
 |-------|------|
-| `RouteNotFoundError` | No route matches the path |
-| `NavigationGuardError` | Guard returns `{ allowed: false }` without redirect |
+| `RouteNotFoundError` | No route matches the navigated path |
+| `NavigationGuardError` | Guard returns `{ allowed: false }` without a redirect |
 | `NoHistoryError` | `back()` called from the first history entry |
 | `DuplicateRouteError` | Same path registered twice |
-| `CallbackDataTooLongError` | Encoded callback exceeds 64 bytes |
-| `ResolverError` | Resolver `resolve()` threw |
-| `InjectionError` | DI token not found in injector |
-| `WizardNotFoundError` | `WizardNavigationEngine` can't find a wizard by ID |
+| `CallbackDataTooLongError` | Encoded callback data exceeds 64 bytes |
+| `ResolverError` | A resolver's `resolve()` threw |
+| `InjectionError` | DI token not found in the injector |
+| `ActionNotFoundError` | No handler registered for the action name |
+| `DuplicateActionError` | Action handler registered twice |
+| `WizardNotFoundError` | No wizard defined with the given ID |
+| `WizardNotActiveError` | `nextStep`/`prevStep`/`cancel` called with no active session |
+| `WizardAtFirstStepError` | `prevStep()` called on the first wizard step |
+| `SnapshotNotFoundError` | `RouteSnapshotStore.update()` called for a non-existent snapshot |
 
 ---
 
@@ -377,13 +527,14 @@ Methods: `register(route)`, `use(middleware)`, `navigate(path, user, chat, targe
 | 4 | Middleware, Guards, Resolvers | Complete |
 | 5 | Action Dispatcher | Complete |
 | 6 | UI Components | Complete |
-| 7 | Wizards | Complete |
-| 8 | DI injector | Complete |
-| 9 | CompactCallbackEncoder, ServerStateEncoder, keyboard diffing, caching | Complete |
-| 10 | Docs, examples, full test suite (490 tests, 81.7% branch coverage) | Complete |
+| 7 | Wizards (multi-step flows, text input) | Complete |
+| 8 | Dependency Injection | Complete |
+| 9 | CompactCallbackEncoder, ServerStateEncoder, keyboard diffing, resolver caching | Complete |
+| 10 | Docs, examples, full test suite (588 tests) | Complete |
+| — | Route Snapshots (restart-safe navigation) | Complete |
 
 ---
 
 ## License
 
-MIT
+Apache 2.0

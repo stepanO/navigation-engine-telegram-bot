@@ -4,3 +4,9 @@ coverage/
 *.js.map
 *.d.ts.map
 .DS_Store
+.kungfu/index/files.json
+.kungfu/index/fingerprints.json
+.kungfu/index/memories.json
+.kungfu/index/relations.json
+.kungfu/index/symbols.json
+.kungfu/project.json
