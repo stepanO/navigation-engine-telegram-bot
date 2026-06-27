@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create GitHub Release
-      id-token: write   # OIDC trusted publishing — no npm token needed
 
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +24,9 @@ jobs:
 
       # prepublishOnly runs typecheck + tests + build
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
