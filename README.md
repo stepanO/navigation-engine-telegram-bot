@@ -13,7 +13,7 @@ Instead of sending a new message on every action, the library edits the **same m
 - **Guards** — block or redirect before a screen activates
 - **Resolvers** — fetch async data (API, DB) before the screen renders; optional per-route TTL cache
 - **Middleware** — cross-cutting concerns (sessions, logging, i18n)
-- **Wizards** — multi-step conversational flows with text input and per-step navigation
+- **Wizards** — multi-step conversational flows: text-input steps, inline-keyboard steps (`onCallback`), built-in prev/cancel buttons, and an async `onExit` hook
 - **UI Components** — composable title, section, stat-card, pagination, confirm-dialog components
 - **Screen Builder / Keyboard Builder** — fluent APIs for building `ScreenView`s
 - **Callback encoders** — three strategies for Telegram's 64-byte `callback_data` limit:
@@ -21,6 +21,8 @@ Instead of sending a new message on every action, the library edits the **same m
   - `CompactCallbackEncoder` — base-36 route IDs + params (≤64 bytes for most paths)
   - `ServerStateEncoder` — stores paths server-side; only an 8-byte key in `callback_data`
 - **Route Snapshots** — restart-safe navigation: screens recover transparently after a bot restart
+- **`onUnrecoverableCallback`** — hook for stale/undecodable callbacks (show "session expired" instead of silent no-op)
+- **`Button.raw(text, data)`** — pass-through button with arbitrary `callback_data`, bypasses the encoder
 - **Singleton screens** — one instance shared across all renders
 - **Lazy route loading** — pass `() => ScreenClass` to defer module loading
 - **Keyboard diffing** — skips Telegram API call when the view hasn't changed
@@ -217,6 +219,25 @@ class HomeScreen implements ScreenComponent {
 }
 ```
 
+**Button factory reference:**
+
+| Factory | callback_data | Description |
+|---------|--------------|-------------|
+| `Button.navigate(text, path)` | `nav:/path` | Push-navigate to a route |
+| `Button.back(text?)` | `nav:__back__` | Go back in nav history |
+| `Button.action(text, name, params?)` | `action:name:p1` | Dispatch an action handler |
+| `Button.url(text, url)` | — | Open an external URL |
+| `Button.webApp(text, url)` | — | Open a Telegram Mini App |
+| `Button.login(text, url, opts?)` | — | Telegram Login Widget button |
+| `Button.raw(text, callbackData)` | verbatim | Pass-through: encoder not applied |
+| `Button.prevStep(text)` | `wiz:prev` | Go to the previous wizard step |
+| `Button.cancelWizard(text, path?)` | `wiz:cancel[:/path]` | Cancel wizard; navigate to `path` or `back()` |
+
+`Button.prevStep()` and `Button.cancelWizard()` are intercepted automatically by `nav.middleware()` — no external handler needed.
+
+```typescript
+```
+
 ### Actions
 
 Button-triggered side effects that do **not** navigate:
@@ -338,20 +359,98 @@ class ConfirmStep extends WizardScreen {
   }
 }
 
-const createProfileWizard: WizardDefinition = {
+nav.registerWizard({
   id: 'create-profile',
   steps: [
     { screen: NameStep },
     { screen: ConfirmStep },
   ],
   exitPath: '/profile',
-};
-
-nav.registerWizard(createProfileWizard);
+  // onExit is called before navigation to exitPath (on both completion and cancel).
+  onExit: async (data, ctx) => {
+    await db.profiles.create({ name: data['name'] as string, userId: ctx.from!.id });
+  },
+});
 
 // Start from a command:
 bot.command('create', ctx => nav.startWizard(ctx, 'create-profile'));
 ```
+
+#### Wizard navigation buttons
+
+`Button.prevStep()` and `Button.cancelWizard()` produce callback tokens that `nav.middleware()` intercepts automatically. No external `bot.callbackQuery()` handler needed.
+
+```typescript
+class NameStep extends WizardScreen {
+  readonly awaitText = true as const;
+
+  async onStep(ctx: WizardContext): Promise<ScreenView> {
+    return new ScreenBuilder()
+      .html('Enter event name:')
+      .row(Button.prevStep('← Back'))           // goes to previous step
+      .row(Button.cancelWizard('✕ Cancel', '/events')) // cancels and navigates to /events
+      .build();
+  }
+  // ...
+}
+```
+
+#### Callback-based wizard steps (`onCallback`)
+
+Use `onCallback` instead of `awaitText` when a wizard step is driven by inline buttons (date pickers, option selectors, etc.). The engine intercepts **all** callback queries for that user while the step is active and routes them here.
+
+```typescript
+import type { WizardCallbackContext } from 'navigation-engine-telegram-bot';
+
+class DatePickerStep extends WizardScreen {
+  async onStep(ctx: WizardContext): Promise<ScreenView> {
+    return new ScreenBuilder()
+      .html('Pick a date:')
+      .row(
+        Button.raw('← Prev month', 'dp:prev'),
+        Button.raw('Next month →', 'dp:next'),
+      )
+      .row(Button.raw('15 Jun 2025', 'dp:select:2025-06-15'))
+      .row(Button.cancelWizard('✕ Cancel'))
+      .build();
+  }
+
+  async onCallback(ctx: WizardCallbackContext): Promise<ScreenView | void> {
+    if (ctx.callbackData.startsWith('dp:select:')) {
+      const date = ctx.callbackData.slice('dp:select:'.length);
+      await ctx.nextStep({ date }); // advance and let the engine answer the CBQ
+      return;
+    }
+    // re-render with updated month — engine answers CBQ after render
+    return this.onStep(ctx); // simplified; real impl would update the calendar
+  }
+}
+```
+
+`WizardCallbackContext` extends `WizardContext` with:
+
+| Member | Description |
+|--------|-------------|
+| `callbackData` | Raw `callback_data` string from the pressed button |
+| `answerCallbackQuery(opts?)` | Dismiss the Telegram spinner (called automatically after a re-render) |
+
+#### `onExit` hook
+
+Add `onExit` to a wizard definition to run async side-effects before the engine navigates to `exitPath`. Triggered on both completion (last step done) and explicit cancellation via `cancelWizard()`.
+
+```typescript
+nav.registerWizard({
+  id: 'create-event',
+  steps: [...],
+  exitPath: (data) => `/events/${data['eventId'] as string}`,
+  onExit: async (data, ctx) => {
+    const event = await db.events.create(data);
+    // data is the accumulated wizard data; ctx is the grammY Context
+  },
+});
+```
+
+`registerWizard` accepts the grammY-extended type `GrammYWizardDefinition` (which adds `onExit?`). Plain `WizardDefinition` objects without `onExit` continue to work unchanged.
 
 ### Lazy Route Loading
 
@@ -471,21 +570,25 @@ new GrammYNavigationEngine(api: Api, options?: GrammYNavigationEngineOptions)
 | `maxHistory` | `number` | `50` | Max history depth per user/chat |
 | `onError` | `(err, ctx, answerCbq) => Promise<void>` | rethrow | Navigation error handler |
 | `onNavigate` | `(event) => void` | none | Navigation telemetry callback |
+| `onUnrecoverableCallback` | `(ctx) => Promise<void>` | call `next()` | Called when a callback cannot be decoded and snapshot recovery fails |
 
 Methods:
 
 | Method | Description |
 |--------|-------------|
 | `register(definition)` | Register a route. Fluent — returns `this`. |
-| `registerWizard(definition)` | Register a wizard. Fluent. |
+| `registerWizard(definition)` | Register a wizard (`GrammYWizardDefinition` or `WizardDefinition`). Fluent. |
 | `registerAction(name, handler)` | Register an action handler. Fluent. |
 | `use(middleware)` | Add global navigation middleware. Fluent. |
 | `middleware()` | Returns a grammY `MiddlewareFn` — pass to `bot.use()`. |
 | `navigate(ctx, path)` | Navigate programmatically (e.g. from a command handler). |
 | `replace(ctx, path)` | Replace current history entry programmatically. |
 | `startWizard(ctx, wizardId)` | Start a wizard session. |
-| `cancelWizard(ctx, wizardId)` | Cancel a wizard session and navigate to `exitPath`. |
+| `cancelWizard(ctx, wizardId)` | Cancel a wizard session, call `onExit`, and navigate to `exitPath`. |
 | `startWizardWithData(ctx, id, data)` | Start a wizard with pre-seeded data. |
+| `nextWizardStep(ctx, wizardId, data?)` | Advance the active wizard from an external handler. |
+| `prevWizardStep(ctx, wizardId)` | Go back one step in the active wizard. |
+| `clearWizardState(ctx)` | Delete the active wizard session without navigating. |
 
 ### `NavigationEngine` (framework-agnostic)
 
@@ -530,8 +633,9 @@ Methods: `register(definition)`, `use(middleware)`, `navigate(path, user, chat, 
 | 7 | Wizards (multi-step flows, text input) | Complete |
 | 8 | Dependency Injection | Complete |
 | 9 | CompactCallbackEncoder, ServerStateEncoder, keyboard diffing, resolver caching | Complete |
-| 10 | Docs, examples, full test suite (588 tests) | Complete |
+| 10 | Docs, examples, full test suite | Complete |
 | — | Route Snapshots (restart-safe navigation) | Complete |
+| — | Wizard callback steps (`onCallback`), `Button.prevStep/cancelWizard/raw`, `onExit`, `onUnrecoverableCallback` | Complete |
 
 ---
 

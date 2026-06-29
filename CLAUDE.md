@@ -58,6 +58,7 @@ src/
 | 9 | CompactCallbackEncoder, ServerStateEncoder, keyboard diffing, resolver caching | **Complete** |
 | 10 | Docs, examples, full test suite | **Complete** |
 | — | Route Snapshots (restart-safe navigation recovery) | **Complete** |
+| — | Wizard callback steps (`onCallback`), `Button.prevStep/cancelWizard/raw`, `onExit` hook, `onUnrecoverableCallback` | **Complete** |
 
 ---
 
@@ -74,9 +75,14 @@ src/
   - `action:name:p1:p2` — dispatch an action
   - `c:{routeId}:{params}` — compact route (`CompactCallbackEncoder`)
   - `s:{6-char-key}` — server-side stored path (`ServerStateEncoder`)
+  - `wiz:prev` — go to previous wizard step (`Button.prevStep`)
+  - `wiz:cancel` / `wiz:cancel:/path` — cancel wizard (`Button.cancelWizard`)
   - `SimpleCallbackEncoder` throws `CallbackDataTooLongError` rather than silently truncating.
 - **DI:** `SimpleInjector` + `InjectionToken`. Constructors with `static factory(injector)` receive injected services; plain no-arg constructors still work unchanged.
 - **Wizards:** `WizardNavigationEngine` is independent of `NavigationEngine` — it renders steps directly via `Renderer` and hands off to navigation via an injected `WizardExitFn`. `WizardStateStore` is separate from `StateStore`. `GrammYNavigationEngine` integrates both lazily.
+- **Wizard callback steps:** `WizardScreen.onCallback?(ctx: WizardCallbackContext)` intercepts all callback queries for the active user/step. `tryHandleCallback()` in `WizardNavigationEngine` mirrors `tryHandleText()`. Checked in `GrammYNavigationEngine.middleware()` after `wiz:*` tokens, before the adapter.
+- **Wizard `onExit`:** `GrammYWizardDefinition.onExit?(data, ctx)` stored in `wizardOnExit` map; invoked via `WizardExitFn` (which now accepts optional `data` and `wizardId` params). The grammY `Context` is pinned in `pendingWizardCtx` for the duration of each wizard operation.
+- **`onUnrecoverableCallback`:** `GrammYNavigationEngineOptions` option threaded into `GrammYAdapter` constructor. Called instead of `next()` when snapshot recovery returns `false`.
 - **Path alias:** `@engine/*` → `./src/*` in both `tsconfig.json` and `jest.config.ts`.
 
 ---

@@ -58,13 +58,44 @@ export interface LoginButtonDescriptor {
   readonly requestWriteAccess?: boolean;
 }
 
+/** Descriptor for a button with raw, pre-encoded callback_data. Not processed by the encoder. */
+export interface RawButtonDescriptor {
+  readonly kind: 'raw';
+  readonly text: string;
+  readonly callbackData: string;
+}
+
+/** Descriptor for a wizard "previous step" button. Triggers prevStep on the active wizard. */
+export interface PrevStepButtonDescriptor {
+  readonly kind: 'prevStep';
+  readonly text: string;
+}
+
+/** Descriptor for a wizard cancel button. Clears wizard state and navigates away. */
+export interface CancelWizardButtonDescriptor {
+  readonly kind: 'cancelWizard';
+  readonly text: string;
+  /** Navigate to this path after cancel. If absent, goes back in nav history. */
+  readonly navigateTo?: string;
+}
+
+/** Callback data token for prevStep wizard button. */
+export const WIZ_PREV_TOKEN = 'wiz:prev' as const;
+/** Callback data token for cancelWizard wizard button (no path override). */
+export const WIZ_CANCEL_TOKEN = 'wiz:cancel' as const;
+/** Prefix for cancelWizard wizard button with a path: `wiz:cancel:/path`. */
+export const WIZ_CANCEL_PREFIX = 'wiz:cancel:' as const;
+
 export type ButtonDescriptor =
   | NavigateButtonDescriptor
   | ActionButtonDescriptor
   | UrlButtonDescriptor
   | BackButtonDescriptor
   | WebAppButtonDescriptor
-  | LoginButtonDescriptor;
+  | LoginButtonDescriptor
+  | RawButtonDescriptor
+  | PrevStepButtonDescriptor
+  | CancelWizardButtonDescriptor;
 
 const DEFAULT_BACK_LABEL = '← Back';
 
@@ -134,5 +165,35 @@ export const Button = {
       return { ...descriptor, forwardText: options.forwardText, ...options };
     }
     return options ? { ...descriptor, ...options } : descriptor;
+  },
+
+  /**
+   * A button with arbitrary, pre-encoded callback_data.
+   * The KeyboardBuilder passes it through as-is, bypassing the encoder.
+   * Use for custom integration tokens that the bot handles outside the navigation engine.
+   * @example Button.raw('Pick date', 'datepicker:2024-01-01')
+   */
+  raw(text: string, callbackData: string): RawButtonDescriptor {
+    return { kind: 'raw', text, callbackData };
+  },
+
+  /**
+   * A wizard "go to previous step" button.
+   * The navigation engine intercepts this callback and calls prevStep on the active wizard.
+   * @example Button.prevStep('← Back')
+   */
+  prevStep(text: string): PrevStepButtonDescriptor {
+    return { kind: 'prevStep', text };
+  },
+
+  /**
+   * A wizard cancel button.
+   * Clears the active wizard state, then navigates to `navigateTo` or calls back() if omitted.
+   * @example Button.cancelWizard('✕ Cancel')
+   * @example Button.cancelWizard('✕ Cancel', '/events')
+   */
+  cancelWizard(text: string, navigateTo?: string): CancelWizardButtonDescriptor {
+    const base: CancelWizardButtonDescriptor = { kind: 'cancelWizard', text };
+    return navigateTo !== undefined ? { ...base, navigateTo } : base;
   },
 } as const;

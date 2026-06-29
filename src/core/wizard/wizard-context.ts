@@ -35,6 +35,25 @@ export interface WizardTextContext extends WizardContext {
   readonly text: string;
 }
 
+/**
+ * Extends WizardContext with callback-query data (available in onCallback handlers).
+ *
+ * When a wizard step implements `onCallback`, the engine intercepts ALL callback
+ * queries for that user while that step is active and calls `onCallback` instead
+ * of passing the update to the navigation adapter.
+ *
+ * The step must either:
+ *  - Call ctx.nextStep() / prevStep() / cancelWizard() — the engine re-renders.
+ *  - Return a ScreenView — the engine re-renders the step (e.g. for validation).
+ *  - Call ctx.answerCallbackQuery() explicitly — for no-render acknowledgements.
+ */
+export interface WizardCallbackContext extends WizardContext {
+  /** The raw callback_data string from the pressed button. */
+  readonly callbackData: string;
+  /** Dismiss the Telegram spinner (and optionally show an alert popup). */
+  answerCallbackQuery(opts?: { text?: string; showAlert?: boolean }): Promise<void>;
+}
+
 export type WizardNextStepFn = (data?: Record<string, unknown>) => Promise<void>;
 export type WizardPrevStepFn = () => Promise<void>;
 export type WizardCancelFn = () => Promise<void>;
@@ -117,5 +136,31 @@ export class ConcreteWizardTextContext extends ConcreteWizardContext implements 
     readonly text: string,
   ) {
     super(route, user, chat, data, step, totalSteps, wizardData, nextStepFn, prevStepFn, cancelFn, navigateFn);
+  }
+}
+
+export type WizardAnswerCallbackQueryFn = (opts?: { text?: string; showAlert?: boolean }) => Promise<void>;
+
+export class ConcreteWizardCallbackContext extends ConcreteWizardContext implements WizardCallbackContext {
+  constructor(
+    route: RouteMatch,
+    user: TelegramUser,
+    chat: TelegramChat,
+    data: Record<string, unknown>,
+    step: number,
+    totalSteps: number,
+    wizardData: Record<string, unknown>,
+    nextStepFn: WizardNextStepFn,
+    prevStepFn: WizardPrevStepFn,
+    cancelFn: WizardCancelFn,
+    navigateFn: WizardNavigateFn,
+    readonly callbackData: string,
+    private readonly answerCallbackQueryFn: WizardAnswerCallbackQueryFn,
+  ) {
+    super(route, user, chat, data, step, totalSteps, wizardData, nextStepFn, prevStepFn, cancelFn, navigateFn);
+  }
+
+  async answerCallbackQuery(opts?: { text?: string; showAlert?: boolean }): Promise<void> {
+    await this.answerCallbackQueryFn(opts);
   }
 }

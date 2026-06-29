@@ -31,17 +31,23 @@ import {
   WizardAtFirstStepError,
 } from '../interfaces/errors.js';
 import { buildWizardKey, buildWizardState } from './wizard-state.js';
-import { ConcreteWizardContext, ConcreteWizardTextContext } from './wizard-context.js';
+import { ConcreteWizardCallbackContext, ConcreteWizardContext, ConcreteWizardTextContext } from './wizard-context.js';
 
 /**
  * Callback that hands off to the main navigation engine.
  * Called by cancelWizard(), nextStep() on the last step, and ctx.navigate/replace().
+ *
+ * The optional `data` and `wizardId` params are provided so the grammY adapter
+ * can invoke per-wizard `onExit` hooks before navigation without changing the
+ * framework-agnostic core. Existing implementations with 4 parameters still work.
  */
 export type WizardExitFn = (
   path: string,
   user: TelegramUser,
   chat: TelegramChat,
   target: RenderTarget,
+  data?: Record<string, unknown>,
+  wizardId?: string,
 ) => Promise<void>;
 
 export class WizardNavigationEngine {
@@ -122,6 +128,70 @@ export class WizardNavigationEngine {
     }
     if (def.deleteUserMessage && incomingMessageId !== undefined) {
       await this.renderer.deleteMessage(chat.id, incomingMessageId);
+    }
+    return true;
+  }
+
+  /**
+   * Handle a callback query for the active wizard's current step.
+   * Returns true if the step declared `onCallback` and handled the update.
+   * Returns false if the current step does not handle callbacks (falls through to adapter).
+   *
+   * When `onCallback` returns a ScreenView the engine re-renders the step.
+   * When it returns void the step handled the interaction itself (nextStep / answerCbq etc.).
+   * The callback query is answered automatically after a re-render.
+   */
+  async tryHandleCallback(
+    wizardId: string,
+    callbackData: string,
+    user: TelegramUser,
+    chat: TelegramChat,
+    target: RenderTarget,
+  ): Promise<boolean> {
+    const def = this.wizards.get(wizardId);
+    if (!def) return false;
+    const state = await this.stateStore.get(buildWizardKey(chat.id, user.id, wizardId));
+    if (!state) return false;
+    const stepDef = def.steps[state.stepIndex];
+    if (!stepDef) return false;
+    const screen = new stepDef.screen();
+    if (!screen.onCallback) return false;
+
+    const syntheticRoute = this.buildSyntheticRoute(def.id, state.stepIndex, stepDef);
+    const answerFn = async (opts?: { text?: string; showAlert?: boolean }) => {
+      await this.renderer.answerCallbackQuery(target, opts?.text, opts?.showAlert);
+    };
+    const ctx = new ConcreteWizardCallbackContext(
+      syntheticRoute, user, chat, {},
+      state.stepIndex + 1, state.totalSteps, state.data,
+      async (data) => this.advanceStep(def, state, data, user, chat, target),
+      async () => this.retreatStep(def, state, user, chat, target),
+      async () => this.cancelInternal(def, state, user, chat, target),
+      async (path, mode) => {
+        if (mode === 'back') {
+          await this.retreatStep(def, state, user, chat, target);
+        } else {
+          await this.exitFn(path, user, chat, target);
+        }
+      },
+      callbackData,
+      answerFn,
+    );
+
+    const result = await screen.onCallback(ctx);
+    if (result !== undefined) {
+      const renderResult = await this.renderer.render(result, target);
+      if (renderResult.messageId !== undefined) {
+        const key = buildWizardKey(chat.id, user.id, def.id);
+        const currentState = await this.stateStore.get(key);
+        if (currentState) {
+          await this.stateStore.set(
+            key,
+            buildWizardState({ ...currentState, messageId: renderResult.messageId }),
+          );
+        }
+      }
+      await this.renderer.answerCallbackQuery(target);
     }
     return true;
   }
@@ -273,7 +343,7 @@ export class WizardNavigationEngine {
       // Last step complete — clean up and hand off to nav engine
       this.activeWizardByUser.delete(`${chat.id}:${user.id}`);
       await this.stateStore.delete(key);
-      await this.exitFn(this.resolveExitPath(def, merged), user, chat, target);
+      await this.exitFn(this.resolveExitPath(def, merged), user, chat, target, merged, def.id);
     } else {
       const newState = buildWizardState({
         wizardId: state.wizardId,
@@ -321,7 +391,7 @@ export class WizardNavigationEngine {
     this.activeWizardByUser.delete(`${chat.id}:${user.id}`);
     const key = buildWizardKey(chat.id, user.id, state.wizardId);
     await this.stateStore.delete(key);
-    await this.exitFn(this.resolveExitPath(def, state.data), user, chat, target);
+    await this.exitFn(this.resolveExitPath(def, state.data), user, chat, target, state.data, def.id);
   }
 
   private async renderStep(

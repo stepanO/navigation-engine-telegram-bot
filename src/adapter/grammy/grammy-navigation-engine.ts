@@ -48,6 +48,7 @@ import { GrammYRenderer } from './grammy-renderer.js';
 import { GrammYAdapter } from './grammy-adapter.js';
 import { extractTelegramUser, extractTelegramChat } from './context-extractors.js';
 import { buildStateKey } from '../../core/interfaces/state.js';
+import { WIZ_PREV_TOKEN, WIZ_CANCEL_TOKEN, WIZ_CANCEL_PREFIX } from '../../core/screen/button.js';
 
 export interface GrammYNavigationEngineOptions {
   /** Swap in a Redis / Postgres store for production deployments. */
@@ -103,6 +104,41 @@ export interface GrammYNavigationEngineOptions {
    * @see InMemoryRouteSnapshotStore
    */
   readonly snapshotStore?: RouteSnapshotStore;
+  /**
+   * Called when the middleware receives a callback_data it cannot decode AND
+   * snapshot recovery either fails or is not configured.
+   *
+   * Use this to show a "session expired" message instead of silently ignoring
+   * the callback. When not set the engine falls through to the next grammY handler.
+   *
+   * @example
+   * onUnrecoverableCallback: async (ctx) => {
+   *   await ctx.answerCallbackQuery({ text: 'Session expired. Tap /start.' });
+   * }
+   */
+  readonly onUnrecoverableCallback?: (ctx: Context) => Promise<void>;
+}
+
+/**
+ * Extends WizardDefinition with grammY-specific hooks.
+ *
+ * @example
+ * nav.registerWizard({
+ *   id: 'createEvent',
+ *   steps: [...],
+ *   exitPath: '/events',
+ *   onExit: async (data, ctx) => {
+ *     await saveEvent(data);
+ *   },
+ * });
+ */
+export interface GrammYWizardDefinition extends WizardDefinition {
+  /**
+   * Called in the grammY adapter before navigation to exitPath.
+   * Triggered on both wizard completion (last step) and cancellation.
+   * Use this for async side-effects: persisting data, calling APIs, etc.
+   */
+  readonly onExit?: (data: Record<string, unknown>, ctx: Context) => Promise<void>;
 }
 
 export class GrammYNavigationEngine {
@@ -119,6 +155,10 @@ export class GrammYNavigationEngine {
     answerCallbackQuery: (opts?: { text?: string; showAlert?: boolean }) => Promise<void>,
   ) => Promise<void>) | undefined;
   private wizardEngine?: WizardNavigationEngine;
+  /** Per-wizard onExit callbacks registered via registerWizard. */
+  private readonly wizardOnExit = new Map<string, (data: Record<string, unknown>, ctx: Context) => Promise<void>>();
+  /** Temporary per-user grammY Context set during wizard operations so exitFn can call onExit. */
+  private readonly pendingWizardCtx = new Map<string, Context>();
 
   constructor(
     api: Api,
@@ -152,7 +192,13 @@ export class GrammYNavigationEngine {
     );
 
     this.dispatcher = new ActionDispatcher();
-    this.adapter = new GrammYAdapter(this.engine, this.stateStore, this.encoder, this.dispatcher);
+    this.adapter = new GrammYAdapter(
+      this.engine,
+      this.stateStore,
+      this.encoder,
+      this.dispatcher,
+      options.onUnrecoverableCallback,
+    );
 
     // Bind cancelRef after all fields are set so the closure captures `this`.
     cancelRef.fn = async (user, chat, wizardId) => {
@@ -189,12 +235,21 @@ export class GrammYNavigationEngine {
   /**
    * Register a wizard definition. Fluent — returns `this` for chaining.
    *
+   * Accepts the grammY-extended definition which supports an optional `onExit` hook.
+   * Plain `WizardDefinition` objects (without `onExit`) are also accepted unchanged.
+   *
    * @example
    * nav.registerWizard({ id: 'createEvent', steps: [...], exitPath: '/events' });
-   * bot.command('create', ctx => nav.startWizard(ctx, 'createEvent'));
+   * nav.registerWizard({
+   *   id: 'createEvent', steps: [...], exitPath: '/events',
+   *   onExit: async (data, ctx) => { await saveEvent(data); },
+   * });
    */
-  registerWizard(definition: WizardDefinition): this {
+  registerWizard(definition: GrammYWizardDefinition): this {
     this.getOrCreateWizardEngine().define(definition);
+    if (definition.onExit !== undefined) {
+      this.wizardOnExit.set(definition.id, definition.onExit);
+    }
     return this;
   }
 
@@ -214,7 +269,7 @@ export class GrammYNavigationEngine {
 
   /**
    * Cancel the active wizard session for the user in the given grammY context.
-   * Navigates to the wizard's configured exitPath.
+   * Navigates to the wizard's configured exitPath and calls `onExit` if registered.
    */
   async cancelWizard(ctx: Context, wizardId: string): Promise<void> {
     if (!ctx.from || !ctx.chat) {
@@ -222,8 +277,14 @@ export class GrammYNavigationEngine {
     }
     const user = extractTelegramUser(ctx.from);
     const chat = extractTelegramChat(ctx.chat);
-    const target = await this.buildRenderTarget(ctx);
-    await this.getOrCreateWizardEngine().cancel(wizardId, user, chat, target);
+    const ctxKey = `${chat.id}:${user.id}`;
+    this.pendingWizardCtx.set(ctxKey, ctx);
+    try {
+      const target = await this.buildRenderTarget(ctx);
+      await this.getOrCreateWizardEngine().cancel(wizardId, user, chat, target);
+    } finally {
+      this.pendingWizardCtx.delete(ctxKey);
+    }
   }
 
   /**
@@ -249,6 +310,7 @@ export class GrammYNavigationEngine {
    * Advance the active wizard to the next step from an external grammY handler.
    * Use this to bridge legacy callback handlers into wizard flows (e.g. a date
    * picker whose callbacks are handled outside the wizard engine).
+   * Calls `onExit` if registered and this is the last step.
    */
   async nextWizardStep(
     ctx: Context,
@@ -260,8 +322,14 @@ export class GrammYNavigationEngine {
     }
     const user = extractTelegramUser(ctx.from);
     const chat = extractTelegramChat(ctx.chat);
-    const target = await this.buildRenderTarget(ctx);
-    await this.getOrCreateWizardEngine().nextStep(wizardId, data, user, chat, target);
+    const ctxKey = `${chat.id}:${user.id}`;
+    this.pendingWizardCtx.set(ctxKey, ctx);
+    try {
+      const target = await this.buildRenderTarget(ctx);
+      await this.getOrCreateWizardEngine().nextStep(wizardId, data, user, chat, target);
+    } finally {
+      this.pendingWizardCtx.delete(ctxKey);
+    }
   }
 
   /**
@@ -310,6 +378,47 @@ export class GrammYNavigationEngine {
     return async (ctx, next) => {
       try {
         if (ctx.callbackQuery?.data) {
+          const cbData = ctx.callbackQuery.data;
+
+          // Intercept wizard-specific tokens before the adapter sees them.
+          if (this.wizardEngine && ctx.from && ctx.chat) {
+            const user = extractTelegramUser(ctx.from);
+            const chat = extractTelegramChat(ctx.chat);
+            const wizardId = await this.wizardEngine.getActiveWizardId(chat.id, user.id);
+
+            if (wizardId !== undefined) {
+              const target = await this.buildRenderTarget(ctx);
+
+              if (cbData === WIZ_PREV_TOKEN) {
+                await this.wizardEngine.prevStep(wizardId, user, chat, target);
+                return;
+              }
+
+              if (cbData === WIZ_CANCEL_TOKEN || cbData.startsWith(WIZ_CANCEL_PREFIX)) {
+                await this.wizardEngine.clearActiveWizard(chat.id, user.id);
+                const navigateTo = cbData.startsWith(WIZ_CANCEL_PREFIX)
+                  ? cbData.slice(WIZ_CANCEL_PREFIX.length)
+                  : undefined;
+                if (navigateTo !== undefined) {
+                  await this.engine.navigate(navigateTo, user, chat, target);
+                } else {
+                  await this.engine.back(user, chat, target);
+                }
+                return;
+              }
+
+              // Feature 6: let the active step's onCallback handler intercept this callback.
+              const ctxKey = `${chat.id}:${user.id}`;
+              this.pendingWizardCtx.set(ctxKey, ctx);
+              try {
+                const handled = await this.wizardEngine.tryHandleCallback(wizardId, cbData, user, chat, target);
+                if (handled) return;
+              } finally {
+                this.pendingWizardCtx.delete(ctxKey);
+              }
+            }
+          }
+
           await adapterMiddleware(ctx, next);
           return;
         }
@@ -319,11 +428,17 @@ export class GrammYNavigationEngine {
           const chat = extractTelegramChat(ctx.chat);
           const wizardId = await this.wizardEngine.getActiveWizardId(chat.id, user.id);
           if (wizardId !== undefined) {
-            const target = await this.buildRenderTarget(ctx);
-            const handled = await this.wizardEngine.tryHandleText(
-              wizardId, ctx.message.text, user, chat, target, ctx.message.message_id,
-            );
-            if (handled) return;
+            const ctxKey = `${chat.id}:${user.id}`;
+            this.pendingWizardCtx.set(ctxKey, ctx);
+            try {
+              const target = await this.buildRenderTarget(ctx);
+              const handled = await this.wizardEngine.tryHandleText(
+                wizardId, ctx.message.text, user, chat, target, ctx.message.message_id,
+              );
+              if (handled) return;
+            } finally {
+              this.pendingWizardCtx.delete(ctxKey);
+            }
           }
         }
 
@@ -370,6 +485,20 @@ export class GrammYNavigationEngine {
   }
 
   /**
+   * Programmatically navigate back one step in history from any grammY handler.
+   * Throws NoHistoryError if already at the start of history.
+   */
+  async back(ctx: Context): Promise<void> {
+    if (!ctx.from || !ctx.chat) {
+      throw new Error('back requires ctx.from and ctx.chat');
+    }
+    const user = extractTelegramUser(ctx.from);
+    const chat = extractTelegramChat(ctx.chat);
+    const target = await this.buildRenderTarget(ctx);
+    await this.engine.back(user, chat, target);
+  }
+
+  /**
    * Clear the active wizard session without navigating anywhere.
    * Use this when the caller handles navigation themselves (e.g. cancel → /admin).
    * Safe to call when no wizard is active — it is a no-op in that case.
@@ -397,7 +526,18 @@ export class GrammYNavigationEngine {
       this.wizardEngine = new WizardNavigationEngine(
         this.renderer,
         this.wizardStateStore,
-        (path, user, chat, target) => this.engine.navigate(path, user, chat, target),
+        async (path, user, chat, target, data, wizardId) => {
+          if (wizardId !== undefined && data !== undefined) {
+            const onExit = this.wizardOnExit.get(wizardId);
+            if (onExit !== undefined) {
+              const pendingCtx = this.pendingWizardCtx.get(`${chat.id}:${user.id}`);
+              if (pendingCtx !== undefined) {
+                await onExit(data, pendingCtx);
+              }
+            }
+          }
+          await this.engine.navigate(path, user, chat, target);
+        },
       );
     }
     return this.wizardEngine;

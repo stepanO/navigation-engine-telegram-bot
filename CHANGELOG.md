@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] — 2026-06-29
+
+### Added
+
+#### Wizard enhancements
+
+- **`WizardScreen.onCallback(ctx: WizardCallbackContext)`** — optional hook for inline-keyboard-driven wizard steps (date pickers, option selectors). When defined, `nav.middleware()` intercepts all callback queries for the active user/step before forwarding them to the navigation adapter.
+- **`WizardCallbackContext`** — extends `WizardContext` with `callbackData: string` and `answerCallbackQuery(opts?)`. The engine answers the callback query automatically after a re-render; call `answerCallbackQuery()` directly for no-render acknowledgements.
+- **`ConcreteWizardCallbackContext`** — concrete implementation, exported for testing.
+- **`GrammYWizardDefinition`** — grammY-layer extension of `WizardDefinition` adding an optional `onExit?(data, ctx: Context): Promise<void>` hook. Accepted by `registerWizard()` in place of a plain `WizardDefinition`. Called before navigation to `exitPath` on both completion and cancellation.
+- **`WizardExitFn`** — two optional trailing parameters added (`data?` and `wizardId?`) so the grammY adapter can invoke `onExit` hooks without touching the framework-agnostic core. Existing implementations with 4 parameters continue to work.
+
+#### Wizard navigation buttons
+
+- **`Button.prevStep(text)`** → `PrevStepButtonDescriptor` — encodes to the `wiz:prev` token. `nav.middleware()` intercepts this token and calls `prevStep()` on the active wizard automatically.
+- **`Button.cancelWizard(text, navigateTo?)`** → `CancelWizardButtonDescriptor` — encodes to `wiz:cancel` or `wiz:cancel:/path`. `nav.middleware()` clears the wizard state and navigates to `navigateTo` (or calls `back()` if omitted).
+- Exported constants: `WIZ_PREV_TOKEN`, `WIZ_CANCEL_TOKEN`, `WIZ_CANCEL_PREFIX`.
+
+#### Miscellaneous button
+
+- **`Button.raw(text, callbackData)`** → `RawButtonDescriptor` — `KeyboardBuilder` passes the provided `callbackData` string through as-is, bypassing the encoder. Useful for custom integration tokens outside the navigation engine.
+
+#### Engine options
+
+- **`GrammYNavigationEngineOptions.onUnrecoverableCallback?: (ctx) => Promise<void>`** — called when a callback query cannot be decoded AND snapshot recovery fails (or is not configured). Use this to show a "session expired" message instead of silently falling through to `next()`. When not set, behaviour is unchanged (calls `next()`).
+
+### Architecture
+
+- `Button.prevStep` and `Button.cancelWizard` tokens use a dedicated `wiz:` prefix that does not collide with `nav:`, `action:`, `c:`, or `s:` tokens from existing encoders.
+- Wizard callback handling priority in `nav.middleware()`: `wiz:prev` / `wiz:cancel` tokens → active step `onCallback` → navigation adapter (nav/action/back/snapshot-recovery).
+- `pendingWizardCtx` map (keyed by `${chatId}:${userId}`) provides the grammY `Context` to `onExit` during the synchronous wizard exit flow without requiring changes to the core engine API.
+
 ## [0.3.0] — 2026-06-28
 
 ### Added

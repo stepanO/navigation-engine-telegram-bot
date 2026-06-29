@@ -1,5 +1,5 @@
 import type { ScreenView } from '../interfaces/screen.js';
-import type { WizardContext, WizardTextContext } from './wizard-context.js';
+import type { WizardCallbackContext, WizardContext, WizardTextContext } from './wizard-context.js';
 
 /**
  * Base class for all wizard step screens.
@@ -38,6 +38,20 @@ export abstract class WizardScreen {
    * Return `void` to signal the step handled the input internally (called nextStep etc.).
    */
   onText?(ctx: WizardTextContext): Promise<ScreenView | void>;
+
+  /**
+   * Called when the user presses any inline button while this step is active.
+   *
+   * When defined, the engine intercepts ALL callback queries for the active wizard
+   * user and routes them here instead of the navigation adapter. This is the
+   * mechanism for implementing date pickers, option selectors, or any other
+   * inline-keyboard-driven wizard step.
+   *
+   * Return a `ScreenView` to re-render the step (e.g. show a validation error).
+   * Return `void` after calling ctx.nextStep(), ctx.prevStep(), ctx.cancelWizard(),
+   * or ctx.answerCallbackQuery() — the step has handled the interaction itself.
+   */
+  onCallback?(ctx: WizardCallbackContext): Promise<ScreenView | void>;
 }
 
 export type WizardScreenConstructor = new () => WizardScreen;

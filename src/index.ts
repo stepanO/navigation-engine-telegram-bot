@@ -107,8 +107,8 @@ export type { WizardState, WizardStateStore } from './core/wizard/wizard-state.j
 export { InMemoryWizardStateStore, buildWizardKey } from './core/wizard/wizard-state.js';
 export { WizardScreen } from './core/wizard/wizard-screen.js';
 export type { WizardScreenConstructor } from './core/wizard/wizard-screen.js';
-export type { WizardContext, WizardTextContext } from './core/wizard/wizard-context.js';
-export { ConcreteWizardTextContext } from './core/wizard/wizard-context.js';
+export type { WizardContext, WizardTextContext, WizardCallbackContext } from './core/wizard/wizard-context.js';
+export { ConcreteWizardTextContext, ConcreteWizardCallbackContext } from './core/wizard/wizard-context.js';
 export { WizardNavigationEngine } from './core/wizard/wizard-navigation-engine.js';
 export type { WizardExitFn } from './core/wizard/wizard-navigation-engine.js';
 
@@ -157,8 +157,11 @@ export type {
   ActionButtonDescriptor,
   UrlButtonDescriptor,
   BackButtonDescriptor,
+  RawButtonDescriptor,
+  PrevStepButtonDescriptor,
+  CancelWizardButtonDescriptor,
 } from './core/screen/button.js';
-export { Button } from './core/screen/button.js';
+export { Button, WIZ_PREV_TOKEN, WIZ_CANCEL_TOKEN, WIZ_CANCEL_PREFIX } from './core/screen/button.js';
 export { KeyboardBuilder } from './core/screen/keyboard-builder.js';
 export { ScreenBuilder } from './core/screen/screen-builder.js';
 export { escapeHtml, bold, italic, underline, strikethrough, code, pre, link, spoiler } from './core/screen/html.js';
@@ -167,6 +170,6 @@ export { escapeHtml, bold, italic, underline, strikethrough, code, pre, link, sp
 export { GrammYRenderer } from './adapter/grammy/grammy-renderer.js';
 export { GrammYAdapter } from './adapter/grammy/grammy-adapter.js';
 export { GrammYNavigationEngine } from './adapter/grammy/grammy-navigation-engine.js';
-export type { GrammYNavigationEngineOptions } from './adapter/grammy/grammy-navigation-engine.js';
+export type { GrammYNavigationEngineOptions, GrammYWizardDefinition } from './adapter/grammy/grammy-navigation-engine.js';
 export { toInlineKeyboardMarkup } from './adapter/grammy/keyboard-converter.js';
 export { extractTelegramUser, extractTelegramChat } from './adapter/grammy/context-extractors.js';

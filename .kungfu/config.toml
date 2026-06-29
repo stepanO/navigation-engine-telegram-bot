@@ -1,0 +1,49 @@
+project_name = "navigation-engine-telegram-bot"
+index_hidden = false
+follow_symlinks = false
+watch = false
+
+[ignore]
+paths = [
+    "node_modules",
+    "dist",
+    "build",
+    ".git",
+    "target",
+    "build",
+    ".kungfu",
+    "__pycache__",
+    ".venv",
+    "vendor",
+]
+
+[languages]
+enabled = [
+    "typescript",
+    "javascript",
+    "rust",
+    "go",
+    "python",
+    "java",
+    "csharp",
+    "kotlin",
+    "c",
+    "cpp",
+    "json",
+    "markdown",
+    "yaml",
+    "toml",
+]
+
+[search]
+default_budget = "small"
+default_top_k = 5
+max_lines = 40
+
+[index]
+store_backend = "json"
+incremental = true
+max_file_bytes = 2097152
+
+[git]
+enabled = true

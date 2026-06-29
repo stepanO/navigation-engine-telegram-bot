@@ -414,6 +414,25 @@ Replace `new Constructor()` instantiation with a proper injector.
 
 ---
 
+## Post-Phase-10 Additions ✅
+
+### Wizard ergonomics (v0.4.0)
+
+- [x] **`WizardScreen.onCallback?(ctx: WizardCallbackContext)`** — inline-keyboard-driven wizard steps; `tryHandleCallback()` mirrors `tryHandleText()` in `WizardNavigationEngine`
+- [x] **`WizardCallbackContext`** / **`ConcreteWizardCallbackContext`** — extends `WizardContext` with `callbackData` and `answerCallbackQuery()`
+- [x] **`Button.prevStep(text)`** / **`Button.cancelWizard(text, path?)`** — wizard navigation buttons handled automatically by `nav.middleware()`; tokens `wiz:prev` / `wiz:cancel[:/path]`
+- [x] **`Button.raw(text, callbackData)`** — pass-through button; encoder not applied
+- [x] **`GrammYWizardDefinition`** / **`onExit?(data, ctx)`** — async hook called before `exitPath` navigation on both completion and cancellation; `WizardExitFn` extended with optional `data` + `wizardId` params (backward-compatible)
+- [x] **`GrammYNavigationEngineOptions.onUnrecoverableCallback`** — called when callback decoding fails and snapshot recovery returns `false`
+
+### Middleware dispatch order in `GrammYNavigationEngine`
+
+1. `wiz:prev` / `wiz:cancel` tokens (if active wizard)
+2. Active step `onCallback` (if step defines it)
+3. Navigation adapter (`nav:`, `action:`, `nav:__back__`, snapshot recovery, `onUnrecoverableCallback`)
+
+---
+
 ## Dependency graph
 
 ```

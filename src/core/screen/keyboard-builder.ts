@@ -15,6 +15,7 @@ import type { KeyboardDefinition, InlineKeyboardButton, LoginUrl } from '../inte
 import type { CallbackDataEncoder } from '../../callback/callback-encoder.js';
 import { SimpleCallbackEncoder } from '../../callback/callback-encoder.js';
 import type { ButtonDescriptor } from './button.js';
+import { WIZ_PREV_TOKEN, WIZ_CANCEL_TOKEN, WIZ_CANCEL_PREFIX } from './button.js';
 
 type KeyboardRowEntry =
   | { readonly kind: 'descriptors'; readonly buttons: readonly ButtonDescriptor[] }
@@ -92,6 +93,16 @@ export class KeyboardBuilder {
         const withBot: LoginUrl = btn.botUsername !== undefined ? { ...full, botUsername: btn.botUsername } : full;
         const final: LoginUrl = btn.requestWriteAccess !== undefined ? { ...withBot, requestWriteAccess: btn.requestWriteAccess } : withBot;
         return { text: btn.text, login_url: final };
+      }
+      case 'raw':
+        return { text: btn.text, callback_data: btn.callbackData };
+      case 'prevStep':
+        return { text: btn.text, callback_data: WIZ_PREV_TOKEN };
+      case 'cancelWizard': {
+        const cbData = btn.navigateTo !== undefined
+          ? `${WIZ_CANCEL_PREFIX}${btn.navigateTo}`
+          : WIZ_CANCEL_TOKEN;
+        return { text: btn.text, callback_data: cbData };
       }
     }
   }

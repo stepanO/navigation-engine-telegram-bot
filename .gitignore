@@ -10,3 +10,7 @@ coverage/
 .kungfu/index/relations.json
 .kungfu/index/symbols.json
 .kungfu/project.json
+.mcp.json
+mcp.json
+plan.md
+plan.md

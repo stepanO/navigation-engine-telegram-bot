@@ -32,6 +32,7 @@ export class GrammYAdapter {
     private readonly stateStore: StateStore,
     private readonly encoder: CallbackDataEncoder,
     private readonly dispatcher?: ActionDispatcher,
+    private readonly onUnrecoverableCallback?: (ctx: Context) => Promise<void>,
   ) {}
 
   /**
@@ -76,15 +77,21 @@ export class GrammYAdapter {
         //
         // Attempt snapshot recovery: look up the RouteSnapshot stored for this
         // specific Telegram message and re-run the full navigation lifecycle.
-        // If no snapshot is found (or no snapshotStore is configured), fall
-        // through to next() so other grammY middleware can handle the update.
+        // If no snapshot is found (or no snapshotStore is configured), call
+        // onUnrecoverableCallback if set, otherwise fall through to next().
+        let recovered = false;
         const messageId = ctx.callbackQuery?.message?.message_id;
         if (messageId !== undefined) {
           const target = await this.buildTarget(ctx);
-          const recovered = await this.engine.recoverNavigation(chat.id, messageId, user, chat, target);
-          if (recovered) return;
+          recovered = await this.engine.recoverNavigation(chat.id, messageId, user, chat, target);
         }
-        await next();
+        if (!recovered) {
+          if (this.onUnrecoverableCallback !== undefined) {
+            await this.onUnrecoverableCallback(ctx);
+          } else {
+            await next();
+          }
+        }
         return;
       }
 
