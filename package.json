@@ -1,6 +1,6 @@
 {
   "name": "grammy-navigation-engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Angular-inspired navigation engine for grammY Telegram bots — SPA-style in-place message routing",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

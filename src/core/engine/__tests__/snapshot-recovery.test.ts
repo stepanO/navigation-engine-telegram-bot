@@ -294,8 +294,8 @@ describe('Recovery after simulated bot restart', () => {
     await engine.navigate('/', user, chat, makeTarget(300));
     const before = await snapshotStore.find(chat.id, 300);
 
-    // Wait 1ms so renderedAt is strictly later
-    await new Promise(r => setTimeout(r, 1));
+    // Wait so renderedAt is strictly later (1ms is too flaky on fast machines)
+    await new Promise(r => setTimeout(r, 10));
 
     await engine.recoverNavigation(chat.id, 300, user, chat, makeTarget(300));
     const after = await snapshotStore.find(chat.id, 300);
